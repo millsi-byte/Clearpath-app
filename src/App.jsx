@@ -86,12 +86,10 @@ export default function DebtPlannerApp() {
     setMessages(prev => [...prev, { role: "user", text: userMessage }]);
 
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: MODELS,
-          max_tokens: 2000,
           system: systemPrompt,
           messages: conversationRef.current,
         }),
