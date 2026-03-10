@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/generate.mjs": {
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    { "source": "/api/generate", "destination": "/api/generate.mjs" }
+  ]
+}
