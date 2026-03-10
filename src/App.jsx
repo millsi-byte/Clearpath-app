@@ -169,8 +169,16 @@ export default function DebtPlannerApp() {
         body: JSON.stringify(planData),
       });
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || "Failed to generate plan");
+        // Try JSON error first, fall back to text (Vercel sometimes returns HTML errors)
+        let errMsg = "Failed to generate plan";
+        try {
+          const err = await response.json();
+          errMsg = err.error || errMsg;
+        } catch {
+          const text = await response.text();
+          errMsg = `Server error (${response.status}): ${text.slice(0, 200)}`;
+        }
+        throw new Error(errMsg);
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
