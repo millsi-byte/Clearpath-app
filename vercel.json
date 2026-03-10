@@ -1,12 +1,11 @@
 {
   "functions": {
     "api/generate.mjs": { 
-      "maxDuration": 30,
-      "runtime": "nodejs20.x"
+      "maxDuration": 60,
+      "memory": 1024
     },
     "api/chat.mjs": { 
-      "maxDuration": 30,
-      "runtime": "nodejs20.x"
+      "maxDuration": 30
     }
   },
   "rewrites": [
