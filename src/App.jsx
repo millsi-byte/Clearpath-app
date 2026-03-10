@@ -129,6 +129,17 @@ export default function DebtPlannerApp() {
     }
   };
 
+
+  const TEST_PLAN_DATA = {"meta":{"name":"Scott","generated":"March 2026","strategy":"HELOC-First Hybrid","start_month":3,"start_year":2026},"income":{"monthly_takehome":13500,"gross_annual_salary":320000,"income_changes":[{"month":9,"year":2026,"delta":540,"note":"8% raise"},{"month":1,"year":2027,"delta":135,"note":"3% annual raise for spouse"}]},"expenses":{"regular":[{"name":"Mortgage","amount":3000,"category":"Housing"},{"name":"Electric","amount":250,"category":"Utilities"},{"name":"Internet","amount":90,"category":"Utilities"},{"name":"Cell phone","amount":245,"category":"Phone"},{"name":"Gas","amount":240,"category":"Transportation"},{"name":"Groceries","amount":1600,"category":"Food"},{"name":"Dining out","amount":1600,"category":"Food"},{"name":"Gym","amount":30,"category":"Personal"},{"name":"Buffer","amount":300,"category":"Miscellaneous"}],"irregular":[{"name":"Car insurance","amount":1400,"mode":"specific_months","months":[1,7]},{"name":"Vacation","amount":12000,"mode":"spread","months":[1,2,3,4,5,6,7,8,9,10,11,12]},{"name":"Holiday spending","amount":4000,"mode":"specific_months","months":[11,12]},{"name":"Heating oil","amount":2500,"mode":"specific_months","months":[9,10,11,12,1,2]},{"name":"Lawn care","amount":1000,"mode":"specific_months","months":[5,6,7,8,9]}]},"debts":[{"name":"HELOC","balance":88000,"rate":0.0625,"min":450,"type":"heloc","is_heloc_io":true,"heloc_draw_ends":{"month":1,"year":2031},"deferred_until":null},{"name":"Hayley Loan","balance":20000,"rate":0.0824,"min":0,"type":"student_loan","is_heloc_io":false,"heloc_draw_ends":null,"deferred_until":{"month":12,"year":2029}},{"name":"Car Loan","balance":30000,"rate":0.05,"min":566,"type":"auto","is_heloc_io":false,"heloc_draw_ends":null,"deferred_until":{"month":5,"year":2026}},{"name":"Corey Loan","balance":19000,"rate":0.0459,"min":0,"type":"student_loan","is_heloc_io":false,"heloc_draw_ends":null,"deferred_until":{"month":12,"year":2026}},{"name":"Mortgage","balance":240000,"rate":0.0252,"min":3000,"type":"mortgage","is_heloc_io":false,"heloc_draw_ends":null,"deferred_until":null}],"attack_order":["HELOC","Hayley Loan","Car Loan","Corey Loan","Mortgage"],"monthly_committed":3450,"windfalls":[{"name":"Bonus","amount":25500,"month":9,"year":2026},{"name":"Stock vesting","amount":2000,"month":2,"year":2026},{"name":"Stock vesting","amount":2000,"month":5,"year":2026},{"name":"Stock vesting","amount":2000,"month":8,"year":2026},{"name":"Stock vesting","amount":2000,"month":11,"year":2026}],"goals":{"priority":"speed","emergency_fund_current":0,"emergency_fund_target":30000,"open_to_refi":true,"notes":"HELOC draw ends Jan 2031. Car loan starts May 2026. Deferred student loans."}};
+
+  const handleLoadTest = () => {
+    setPlanData(TEST_PLAN_DATA);
+    setStarted(true);
+    setMessages([
+      { role: "assistant", text: "✅ **Test data loaded** — Scott's complete plan is ready. Click the **Download Plan** button to test the Excel generator." }
+    ]);
+  };
+
   const handleStart = () => {
     setStarted(true);
     callClaude("Hello, I\'m ready to build my debt payoff plan.");
@@ -276,6 +287,24 @@ export default function DebtPlannerApp() {
             onMouseLeave={e => e.target.style.transform = "translateY(0)"}
           >
             Build My Plan →
+          </button>
+
+          <button
+            onClick={handleLoadTest}
+            style={{
+              background: "transparent",
+              color: "#4a6a8a",
+              border: "1px dashed #4a6a8a",
+              borderRadius: 12,
+              padding: "10px 24px",
+              fontSize: "0.8rem",
+              fontWeight: 600,
+              cursor: "pointer",
+              marginTop: 12,
+              width: "100%",
+            }}
+          >
+            🧪 Load Test Data (skip interview)
           </button>
 
           <p style={{ color: "#4a6a8a", fontSize: "0.78rem", marginTop: 16 }}>
