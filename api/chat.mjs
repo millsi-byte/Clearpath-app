@@ -9,6 +9,13 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing messages or system prompt" });
   }
 
+  // Keep only the last 20 messages to avoid token/timeout limits
+  // Always keep the first message (Claude's opening) for context
+  let trimmedMessages = messages;
+  if (messages.length > 20) {
+    trimmedMessages = messages.slice(messages.length - 20);
+  }
+
   try {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -19,9 +26,9 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
-        max_tokens: 2000,
+        max_tokens: 4000,
         system,
-        messages,
+        messages: trimmedMessages,
       }),
     });
 
