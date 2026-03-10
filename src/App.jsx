@@ -60,20 +60,27 @@ export default function DebtPlannerApp() {
   }, [messages]);
 
   const extractPlanData = (text) => {
+    // Try tagged version first
     const match = text.match(/<plan_data>([\s\S]*?)<\/plan_data>/);
     if (match) {
-      try {
-        return JSON.parse(match[1].trim());
-      } catch(e) {
-        console.error("Failed to parse plan_data:", e);
-        return null;
-      }
+      try { return JSON.parse(match[1].trim()); }
+      catch(e) { console.error("Failed to parse plan_data (tagged):", e); }
+    }
+    // Fallback: look for raw JSON block with meta + debts keys
+    const jsonMatch = text.match(/\{[\s\S]*"meta"[\s\S]*"debts"[\s\S]*\}/);
+    if (jsonMatch) {
+      try { return JSON.parse(jsonMatch[0]); }
+      catch(e) { console.error("Failed to parse plan_data (untagged):", e); }
     }
     return null;
   };
 
   const stripPlanData = (text) => {
-    return text.replace(/<plan_data>[\s\S]*?<\/plan_data>/, "").trim();
+    // Remove tagged block
+    let stripped = text.replace(/<plan_data>[\s\S]*?<\/plan_data>/, "").trim();
+    // Also remove raw JSON block if it was detected (starts with { contains "meta")
+    stripped = stripped.replace(/\{[\s\S]*"meta"[\s\S]*"debts"[\s\S]*\}/, "").trim();
+    return stripped;
   };
 
   const callClaude = async (userMessage) => {
