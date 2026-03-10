@@ -51,16 +51,49 @@ function simulate(data){
     const totalIncome=baseIncome+wfTotal;
     const surplus=totalIncome-totalExp;
     const committed=monthly_committed+wfTotal;
-    const totalMins=ds.filter(d=>d.balance>0).reduce((s,d)=>s+d.min,0);
+    const totalMins=ds.filter(d=>{
+      if(d.balance<=0)return false;
+      if(d.deferred_until){const def=d.deferred_until;if(def.year>yr||(def.year===yr&&def.month>mo))return false;}
+      return true;
+    }).reduce((s,d)=>s+d.min,0);
     const extra=Math.max(0,committed-totalMins);
 
     const dc={};
     for(const d of ds){
-      if(d.balance<=0){dc[d.name]={interest:0,minPmt:0,minPrin:0};continue;}
+      if(d.balance<=0){dc[d.name]={interest:0,minPmt:0,minPrin:0,deferred:false,helocIO:false};continue;}
+
+      // ── DEFERRED LOAN: interest accrues to balance, no payment made ──
+      const isDeferred=d.deferred_until&&(
+        d.deferred_until.year>yr||(d.deferred_until.year===yr&&d.deferred_until.month>mo)
+      );
+      if(isDeferred){
+        const interest=r2(d.balance*(d.rate/12));
+        dc[d.name]={interest,minPmt:0,minPrin:0,deferred:true,helocIO:false};
+        continue;
+      }
+
+      // ── HELOC: recalculate min at draw-period cliff ──
+      const helocDrawEnded=d.is_heloc_io&&d.heloc_draw_ends&&(
+        d.heloc_draw_ends.year<yr||(d.heloc_draw_ends.year===yr&&d.heloc_draw_ends.month<=mo)
+      );
+      let effectiveMin=d.min;
+      if(d.is_heloc_io&&!helocDrawEnded){
+        // IO period: min = interest only
+        effectiveMin=r2(d.balance*(d.rate/12));
+      } else if(d.is_heloc_io&&helocDrawEnded){
+        // Repayment period: fully amortizing over 20 years (240 months) from draw end
+        // P&I payment = P * r(1+r)^n / ((1+r)^n - 1)
+        const r=d.rate/12;
+        const n=240;
+        effectiveMin=r2(d.balance*(r*Math.pow(1+r,n))/(Math.pow(1+r,n)-1));
+        // update the stored min so cascade math uses the new payment
+        d.min=effectiveMin;
+      }
+
       const interest=r2(d.balance*(d.rate/12));
-      const minPmt=Math.min(d.min,d.balance+interest);
+      const minPmt=Math.min(effectiveMin,d.balance+interest);
       const minPrin=Math.max(0,minPmt-interest);
-      dc[d.name]={interest,minPmt,minPrin};
+      dc[d.name]={interest,minPmt,minPrin,deferred:false,helocIO:d.is_heloc_io&&!helocDrawEnded};
     }
 
     let remExtra=extra;
@@ -69,23 +102,34 @@ function simulate(data){
       if(remExtra<=0)break;
       const d=ds.find(x=>x.name===tgt);
       if(!d||d.balance<=0)continue;
+      if(dc[tgt].deferred)continue; // don't apply extra to deferred loans
       const cap=Math.max(0,r2(d.balance-dc[tgt].minPrin));
       const app=r2(Math.min(remExtra,cap));
       alloc[tgt]=app;remExtra=r2(remExtra-app);
     }
 
-    const target=attack_order.find(n=>{const d=ds.find(x=>x.name===n);return d&&d.balance>0;})||null;
+    const target=attack_order.find(n=>{const d=ds.find(x=>x.name===n);return d&&d.balance>0&&!dc[n]?.deferred;})||null;
     const detail=[];
     for(const d of ds){
-      if(d.balance<=0){detail.push({name:d.name,begBal:0,min:d.min,interest:0,minPrincipal:0,extraPrincipal:0,totalPaid:0,endBal:0,isTarget:false,paidOffNow:false});continue;}
+      if(d.balance<=0){detail.push({name:d.name,begBal:0,min:d.min,interest:0,minPrincipal:0,extraPrincipal:0,totalPaid:0,endBal:0,isTarget:false,paidOffNow:false,deferred:false});continue;}
       const beg=d.balance;
-      const{interest,minPmt,minPrin}=dc[d.name];
+      const{interest,minPmt,minPrin,deferred}=dc[d.name];
       const ep=alloc[d.name];
-      const totalPaid=minPmt+ep;
-      const end=Math.max(0,r2(beg-minPrin-ep));
-      const paidOffNow=end===0&&beg>0;
-      d.balance=end;
-      detail.push({name:d.name,begBal:beg,min:d.min,interest,minPrincipal:minPrin,extraPrincipal:ep,totalPaid,endBal:end,isTarget:ep>0,paidOffNow});
+
+      let end,totalPaid;
+      if(deferred){
+        // Interest capitalizes into balance; no payment
+        end=r2(beg+interest);
+        totalPaid=0;
+        d.balance=end;
+        detail.push({name:d.name,begBal:beg,min:d.min,interest,minPrincipal:0,extraPrincipal:0,totalPaid:0,endBal:end,isTarget:false,paidOffNow:false,deferred:true});
+      } else {
+        totalPaid=minPmt+ep;
+        end=Math.max(0,r2(beg-minPrin-ep));
+        const paidOffNow=end===0&&beg>0;
+        d.balance=end;
+        detail.push({name:d.name,begBal:beg,min:d.min,interest,minPrincipal:minPrin,extraPrincipal:ep,totalPaid,endBal:end,isTarget:ep>0,paidOffNow,deferred:false});
+      }
     }
     const totalDebt=ds.reduce((s,d)=>s+d.balance,0);
     plan.push({year:yr,month:mo,label:`${MN[mo]} ${yr}`,income:baseIncome,regItems,regTotal,irregItems,irregTotal,wfItems,wfTotal,totalIncomeThisMonth:totalIncome,totalExpenses:totalExp,surplus,totalMinimums:totalMins,extraToTarget:extra,target,detail,totalDebt});
