@@ -1,710 +1,781 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 
-// ── Supabase helpers ──────────────────────────────────────────────────────────
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+const MODELS = "claude-sonnet-4-20250514";
 
-async function sbFetch(path, opts = {}) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    ...opts,
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "return=representation",
-      ...(opts.headers || {}),
-    },
+function parseMarkdown(text) {
+  text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  text = text.replace(/`([^`]+)`/g, '<code style="background:#1e3a5f;padding:2px 6px;border-radius:3px;font-size:0.9em;">$1</code>');
+  text = text.replace(/^### (.*$)/gm, '<h3 style="color:#7eb8f7;font-size:1em;font-weight:700;margin:12px 0 4px;">$1</h3>');
+  text = text.replace(/^## (.*$)/gm, '<h2 style="color:#7eb8f7;font-size:1.1em;font-weight:700;margin:14px 0 6px;">$1</h2>');
+  text = text.replace(/^---$/gm, '<hr style="border:none;border-top:1px solid #1e3a5f;margin:12px 0;"/>');
+  text = text.replace(/\|(.+)\|/g, (match) => {
+    const cells = match.split('|').filter(c => c.trim());
+    return '<tr>' + cells.map(c => `<td style="padding:5px 10px;border:1px solid #1e3a5f;">${c.trim()}</td>`).join('') + '</tr>';
   });
-  return res;
+  text = text.replace(/^[\-\*] (.+)$/gm, '<li style="margin:3px 0 3px 16px;">$1</li>');
+  text = text.replace(/(<li.*<\/li>\n?)+/g, m => `<ul style="margin:6px 0;padding:0;">${m}</ul>`);
+  text = text.replace(/^\d+\. (.+)$/gm, '<li style="margin:3px 0 3px 16px;">$1</li>');
+  text = text.replace(/\n/g, '<br/>');
+  text = text.replace(/(<tr>.*?<\/tr><br\/>)+/g, m =>
+    `<table style="border-collapse:collapse;margin:8px 0;font-size:0.85em;width:100%;">${m.replace(/<br\/>/g,'')}</table>`
+  );
+  return text;
 }
 
-const PLAN_SYSTEM_PROMPT = `You are an expert debt payoff advisor. The user has filled out a structured form with their complete financial data. Analyze it and produce three complete debt payoff plans.
-
-CRITICAL RULES:
-- Use ONLY the data provided. Never invent numbers, names, or dates.
-- Today's date is provided in the payload. All payoff dates MUST be after today.
-- Be warm and encouraging but mathematically precise.
-
-DEBT MATH:
-- Monthly interest: (rate / 12) × balance
-- Principal paid: payment - interest
-- Cascade: when debt hits $0, its minimum rolls to next target
-- Extra monthly = monthly_committed - sum of all minimums
-- Deferred loans: balance grows monthly, no payments until activation
-- HELOC IO: minimum = (rate/12) × balance only
-
-OUTPUT — respond with exactly this structure:
-
-## Your Three Plans
-
-### 📊 Plan A — Avalanche (Highest Rate First)
-Attack order: [list highest to lowest rate]
-- 🗓️ Debt-free date: [Month Year — MUST be future]
-- 💸 Total interest paid: $[X]
-- 💰 Saves $[X] vs. minimums only forever
-- 🎉 First debt gone: [name] — [Month Year]
-- ⚖️ Tradeoff: [honest 1-sentence tradeoff]
-
-### 🏆 Plan B — Snowball (Smallest Balance First)
-Attack order: [list smallest to largest balance]
-- 🗓️ Debt-free date: [Month Year]
-- 💸 Total interest paid: $[X]
-- 💰 Saves $[X] vs. minimums only
-- 🎉 First debt gone: [name] — [Month Year] ([X] months away!)
-- ⚖️ Tradeoff: [honest comparison to Plan A]
-
-### ⭐ Plan C — [Custom Name]
-[Consider HELOC cliffs, deferred loan dates, emotional priorities, emergency fund gap]
-Attack order: [list]
-- 🗓️ Debt-free date: [Month Year]
-- 💸 Total interest paid: $[X]
-- 💰 Saves $[X] vs. minimums only
-- ✅ Why this plan: [2 sentences using their actual debt names]
-- ⚖️ Tradeoff: [honest tradeoff]
-
----
-
-## 🎯 My Recommendation
-[2-3 sentences using their actual debt names and numbers]
-
----
-
-## 📈 The Big Picture
-- Total debt today: $[X]
-- Minimums-only payoff date: [Month Year]
-- Best plan saves you: $[X] in interest
-- Best plan debt-free date: [Month Year] — [X] years sooner
-
----
-
-## 💬 Ask Me Anything
-Your plan is ready. Try asking:
-- "What if I get a bonus next month?"
-- "What should I pay first this month?"
-- "Explain the avalanche method"`;
-
-const emptyForm = {
-  name: "",
-  monthly_takehome: "", partner_income: "", other_income: "", gross_annual: "",
-  bonus_amount: "", bonus_month: "",
-  rent_mortgage: "", property_tax: "", hoa: "",
-  electric_gas: "", water: "", internet: "",
-  streaming: "", phone: "",
-  car_payment: "", car_insurance_monthly: "", gas: "",
-  groceries: "", dining: "",
-  health_insurance: "", medical_copays: "",
-  childcare: "", pets: "", personal_care: "", gym: "",
-  savings_transfers: "", misc_buffer: "", other_monthly: "",
-  car_insurance_annual: "", home_insurance_annual: "", amazon_prime: "",
-  car_registration: "", vet_annual: "", holiday_spending: "",
-  vacation_annual: "", other_irregular: "",
-  debts: [],
-  monthly_committed: "", emergency_fund_current: "", emergency_fund_target: "",
-  priority: "balanced", open_to_refi: false,
-  emotional_priority: "", upcoming_expenses: "",
-};
-
-const emptyDebt = {
-  name: "", balance: "", rate: "", min: "", type: "credit_card",
-  deferred: false, deferred_until_month: "", deferred_until_year: "",
-  is_heloc_io: false, heloc_draw_ends_month: "", heloc_draw_ends_year: "",
-};
-
-const DEBT_TYPES = ["credit_card","student_loan","auto","mortgage","heloc","personal","medical","other"];
-const PRIORITIES = [
-  { value: "speed", label: "🏁 Speed", desc: "Debt-free as fast as possible" },
-  { value: "save_interest", label: "💰 Save Money", desc: "Pay least total interest" },
-  { value: "cash_flow", label: "📆 Free Up Cash", desc: "Lower monthly bills quickly" },
-  { value: "balanced", label: "⚖️ Balanced", desc: "Reasonable middle ground" },
-];
-
-const SECTIONS = [
-  { id: "intro", label: "👋 Welcome", icon: "👋" },
-  { id: "income", label: "💵 Income", icon: "💵" },
-  { id: "expenses_regular", label: "📋 Monthly Expenses", icon: "📋" },
-  { id: "expenses_irregular", label: "📆 Annual Expenses", icon: "📆" },
-  { id: "debts", label: "💳 Your Debts", icon: "💳" },
-  { id: "goals", label: "🎯 Goals & Commitment", icon: "🎯" },
-];
-
-export default function App() {
-  const [screen, setScreen] = useState("code");
-  const [code, setCode] = useState("");
-  const [codeError, setCodeError] = useState("");
+export default function DebtPlannerApp() {
+  // ── Access code state ──
+  const [codeInput, setCodeInput] = useState("");
+  const [codeError, setCodeError] = useState(null);
   const [codeLoading, setCodeLoading] = useState(false);
-  const [sessionRow, setSessionRow] = useState(null);
-  const [form, setForm] = useState(emptyForm);
-  const [openSection, setOpenSection] = useState("intro");
-  const [completedSections, setCompletedSections] = useState(new Set());
-  const [planLoading, setPlanLoading] = useState(false);
-  const [planText, setPlanText] = useState("");
-  const [planError, setPlanError] = useState("");
-  const [qaMessages, setQaMessages] = useState([]);
-  const [qaInput, setQaInput] = useState("");
-  const [qaLoading, setQaLoading] = useState(false);
-  const qaEndRef = useRef(null);
-  const saveTimer = useRef(null);
+  const [accessCode, setAccessCode] = useState(null);
+  const [expiresAt, setExpiresAt] = useState(null);
+  const [isReturningUser, setIsReturningUser] = useState(false);
 
-  useEffect(() => { qaEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [qaMessages]);
+  // ── App state ──
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [planData, setPlanData] = useState(null);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [started, setStarted] = useState(false);
+  const [error, setError] = useState(null);
+  const [systemPrompt, setSystemPrompt] = useState("");
+
+  const messagesEndRef = useRef(null);
+  const inputRef = useRef(null);
+  const conversationRef = useRef([]);
+  const saveTimeoutRef = useRef(null);
 
   useEffect(() => {
-    if (!sessionRow) return;
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      sbFetch(`access_codes?id=eq.${sessionRow.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ session_data: { form, planText, qaMessages } }),
-      });
-    }, 2000);
-    return () => clearTimeout(saveTimer.current);
-  }, [form, planText, qaMessages]);
+    fetch("/system-prompt.txt")
+      .then(r => r.text())
+      .then(text => setSystemPrompt(text))
+      .catch(err => console.error("Failed to load system prompt:", err));
+  }, []);
 
-  async function handleValidateCode() {
-    if (!code.trim()) return;
-    setCodeLoading(true); setCodeError("");
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // ── Save session to Supabase (debounced) ──
+  const saveSession = useCallback((code, planDataToSave, messagesToSave) => {
+    if (!code) return;
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(async () => {
+      try {
+        await fetch("/api/save-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            code,
+            sessionData: planDataToSave,
+            messages: messagesToSave,
+          }),
+        });
+      } catch (err) {
+        console.error("Failed to save session:", err);
+      }
+    }, 2000); // debounce 2 seconds
+  }, []);
+
+  // ── Validate access code ──
+  const handleValidateCode = async () => {
+    if (!codeInput.trim()) return;
+    setCodeLoading(true);
+    setCodeError(null);
+
     try {
       const res = await fetch("/api/validate-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: code.trim().toUpperCase() }),
+        body: JSON.stringify({ code: codeInput.trim() }),
       });
+
       const data = await res.json();
-      if (!res.ok) { setCodeError(data.error || "Invalid code"); return; }
-      setSessionRow(data.row);
-      if (data.row.session_data?.planText) {
-        setForm(data.row.session_data.form || emptyForm);
-        setPlanText(data.row.session_data.planText || "");
-        setQaMessages(data.row.session_data.qaMessages || []);
-        setScreen("plan");
-      } else if (data.row.session_data?.form) {
-        setForm(data.row.session_data.form);
-        setScreen("form");
-      } else {
-        setScreen("form");
+
+      if (!res.ok) {
+        setCodeError(data.error || "Invalid code.");
+        setCodeLoading(false);
+        return;
       }
-    } catch { setCodeError("Connection error. Try again."); }
-    finally { setCodeLoading(false); }
-  }
 
-  const setField = (key, val) => setForm(f => ({ ...f, [key]: val }));
+      setAccessCode(codeInput.trim().toUpperCase());
+      setExpiresAt(data.expiresAt);
 
-  function addDebt() {
-    setForm(f => ({ ...f, debts: [...f.debts, { ...emptyDebt, id: Date.now() }] }));
-  }
-  function updateDebt(idx, key, val) {
-    setForm(f => { const d = [...f.debts]; d[idx] = { ...d[idx], [key]: val }; return { ...f, debts: d }; });
-  }
-  function removeDebt(idx) {
-    setForm(f => ({ ...f, debts: f.debts.filter((_, i) => i !== idx) }));
-  }
-  function markComplete(sectionId) {
-    setCompletedSections(s => new Set([...s, sectionId]));
-    const idx = SECTIONS.findIndex(s => s.id === sectionId);
-    if (idx < SECTIONS.length - 1) setOpenSection(SECTIONS[idx + 1].id);
-  }
+      // Returning user with saved session
+      if (!data.isFirstUse && data.sessionData) {
+        setIsReturningUser(true);
+        setPlanData(data.sessionData);
+        if (data.messages && data.messages.length > 0) {
+          setMessages(data.messages);
+          conversationRef.current = data.messages.map(m => ({
+            role: m.role,
+            content: m.text,
+          }));
+        }
+        setStarted(true);
+      }
+      // First time user — show landing normally
+    } catch (err) {
+      setCodeError("Something went wrong. Please try again.");
+    } finally {
+      setCodeLoading(false);
+    }
+  };
 
-  function buildPayload() {
-    const f = form;
-    const monthlyIn = [f.monthly_takehome, f.partner_income, f.other_income].reduce((a, v) => a + (parseFloat(v) || 0), 0);
-    const regularExp = [
-      ["Rent/Mortgage", f.rent_mortgage], ["Property Tax", f.property_tax], ["HOA", f.hoa],
-      ["Electric/Gas", f.electric_gas], ["Water", f.water], ["Internet", f.internet],
-      ["Streaming", f.streaming], ["Phone", f.phone], ["Car Payment", f.car_payment],
-      ["Car Insurance (monthly)", f.car_insurance_monthly], ["Gas", f.gas],
-      ["Groceries", f.groceries], ["Dining Out", f.dining],
-      ["Health Insurance", f.health_insurance], ["Medical Copays", f.medical_copays],
-      ["Childcare", f.childcare], ["Pets", f.pets], ["Personal Care", f.personal_care],
-      ["Gym", f.gym], ["Savings Transfers", f.savings_transfers],
-      ["Misc Buffer", f.misc_buffer], ["Other Monthly", f.other_monthly],
-    ].map(([name, v]) => ({ name, amount: parseFloat(v) || 0 })).filter(e => e.amount > 0);
+  const handleCodeKeyDown = (e) => {
+    if (e.key === "Enter") handleValidateCode();
+  };
 
-    const irregularAnn = [
-      ["Car Insurance (annual)", f.car_insurance_annual],
-      ["Home Insurance (annual)", f.home_insurance_annual],
-      ["Memberships/Amazon", f.amazon_prime], ["Car Registration", f.car_registration],
-      ["Vet Bills", f.vet_annual], ["Holiday Spending", f.holiday_spending],
-      ["Vacation", f.vacation_annual], ["Other Annual", f.other_irregular],
-    ].map(([name, v]) => ({ name, amount: parseFloat(v) || 0 })).filter(e => e.amount > 0);
+  // ── Extract / strip plan data ──
+  const extractPlanData = (text) => {
+    const match = text.match(/<plan_data>([\s\S]*?)<\/plan_data>/);
+    if (match) {
+      try { return JSON.parse(match[1].trim()); }
+      catch(e) { console.error("Failed to parse plan_data (tagged):", e); }
+    }
+    const jsonMatch = text.match(/\{[\s\S]*"meta"[\s\S]*"debts"[\s\S]*\}/);
+    if (jsonMatch) {
+      try { return JSON.parse(jsonMatch[0]); }
+      catch(e) { console.error("Failed to parse plan_data (untagged):", e); }
+    }
+    return null;
+  };
 
-    const monthlyIrreg = irregularAnn.reduce((a, e) => a + e.amount, 0) / 12;
-    const totalExp = regularExp.reduce((a, e) => a + e.amount, 0) + monthlyIrreg;
-    const totalMins = f.debts.reduce((a, d) => a + (parseFloat(d.min) || 0), 0);
-    const committed = parseFloat(f.monthly_committed) || 0;
+  const stripPlanData = (text) => {
+    let stripped = text.replace(/<plan_data>[\s\S]*?<\/plan_data>/, "").trim();
+    stripped = stripped.replace(/\{[\s\S]*"meta"[\s\S]*"debts"[\s\S]*\}/, "").trim();
+    return stripped;
+  };
 
-    return {
-      name: f.name || "there",
-      today: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-      income: { monthly_takehome: parseFloat(f.monthly_takehome)||0, partner: parseFloat(f.partner_income)||0, other: parseFloat(f.other_income)||0, total: monthlyIn, gross_annual: parseFloat(f.gross_annual)||0, bonus_amount: parseFloat(f.bonus_amount)||0, bonus_month: f.bonus_month },
-      expenses: { regular: regularExp, irregular_annual: irregularAnn, monthly_irregular_equiv: Math.round(monthlyIrreg), total_monthly: Math.round(totalExp) },
-      surplus: Math.round(monthlyIn - totalExp),
-      debts: f.debts.map(d => ({
-        name: d.name, balance: parseFloat(d.balance)||0,
-        rate: (parseFloat(d.rate)||0) / 100, min: parseFloat(d.min)||0,
-        type: d.type,
-        deferred_until: d.deferred && d.deferred_until_month && d.deferred_until_year ? { month: parseInt(d.deferred_until_month), year: parseInt(d.deferred_until_year) } : null,
-        is_heloc_io: d.is_heloc_io,
-        heloc_draw_ends: d.is_heloc_io && d.heloc_draw_ends_month ? { month: parseInt(d.heloc_draw_ends_month), year: parseInt(d.heloc_draw_ends_year) } : null,
-      })),
-      total_debt: f.debts.reduce((a, d) => a + (parseFloat(d.balance)||0), 0),
-      total_minimums: Math.round(totalMins),
-      monthly_committed: committed,
-      extra_monthly: Math.round(Math.max(0, committed - totalMins)),
-      goals: { priority: f.priority, emergency_fund_current: parseFloat(f.emergency_fund_current)||0, emergency_fund_target: parseFloat(f.emergency_fund_target)||0, open_to_refi: f.open_to_refi, emotional_priority: f.emotional_priority, upcoming_expenses: f.upcoming_expenses },
-    };
-  }
+  // ── Call Claude ──
+  const callClaude = async (userMessage) => {
+    setLoading(true);
+    setError(null);
 
-  async function generatePlan() {
-    if (!form.debts.length) { setPlanError("Add at least one debt first."); return; }
-    if (!form.monthly_committed) { setPlanError("Enter your monthly commitment in Goals."); return; }
-    setPlanLoading(true); setPlanError(""); setPlanText("");
+    const newUserMsg = { role: "user", content: userMessage };
+    conversationRef.current = [...conversationRef.current, newUserMsg];
+    const newMessages = [...messages, { role: "user", text: userMessage }];
+    setMessages(newMessages);
+
     try {
-      const payload = buildPayload();
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 2000,
-          system: PLAN_SYSTEM_PROMPT,
-          messages: [{ role: "user", content: `Here is my complete financial data. Please generate my three debt payoff plans.\n\n${JSON.stringify(payload, null, 2)}` }],
+          system: systemPrompt,
+          messages: conversationRef.current,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || "API error");
-      setPlanText(data.content?.[0]?.text || "");
-      setQaMessages([{ role: "assistant", content: `Hi ${form.name || "there"}! Your plan is ready. I have all your numbers in front of me — ask me anything, run a what-if, or ask me to explain any term.` }]);
-      setScreen("plan");
-    } catch (e) { setPlanError("Error: " + e.message); }
-    finally { setPlanLoading(false); }
-  }
 
-  async function sendQA() {
-    if (!qaInput.trim() || qaLoading) return;
-    const msg = { role: "user", content: qaInput.trim() };
-    const msgs = [...qaMessages, msg];
-    setQaMessages(msgs); setQaInput(""); setQaLoading(true);
-    const payload = buildPayload();
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err?.error?.message || "API error");
+      }
+
+      const data = await response.json();
+      const rawText = data.content?.[0]?.text || "";
+
+      const extracted = extractPlanData(rawText);
+      const displayText = extracted ? stripPlanData(rawText) : rawText;
+
+      const assistantMsg = { role: "assistant", content: rawText };
+      conversationRef.current = [...conversationRef.current, assistantMsg];
+
+      const updatedMessages = [...newMessages, { role: "assistant", text: displayText }];
+      setMessages(updatedMessages);
+
+      if (extracted) {
+        setPlanData(extracted);
+        saveSession(accessCode, extracted, updatedMessages);
+      } else {
+        saveSession(accessCode, planData, updatedMessages);
+      }
+
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
+  };
+
+  // ── Test data ──
+  const TEST_PLAN_DATA = {"meta":{"name":"Scott","generated":"March 2026","strategy":"HELOC-First Hybrid","start_month":3,"start_year":2026},"income":{"monthly_takehome":13500,"gross_annual_salary":320000,"income_changes":[{"month":9,"year":2026,"delta":540,"note":"8% raise"},{"month":1,"year":2027,"delta":135,"note":"3% annual raise for spouse"}]},"expenses":{"regular":[{"name":"Mortgage","amount":3000,"category":"Housing"},{"name":"Electric","amount":250,"category":"Utilities"},{"name":"Internet","amount":90,"category":"Utilities"},{"name":"Cell phone","amount":245,"category":"Phone"},{"name":"Gas","amount":240,"category":"Transportation"},{"name":"Groceries","amount":1600,"category":"Food"},{"name":"Dining out","amount":1600,"category":"Food"},{"name":"Gym","amount":30,"category":"Personal"},{"name":"Buffer","amount":300,"category":"Miscellaneous"}],"irregular":[{"name":"Car insurance","amount":1400,"mode":"specific_months","months":[1,7]},{"name":"Vacation","amount":12000,"mode":"spread","months":[1,2,3,4,5,6,7,8,9,10,11,12]},{"name":"Holiday spending","amount":4000,"mode":"specific_months","months":[11,12]},{"name":"Heating oil","amount":2500,"mode":"specific_months","months":[9,10,11,12,1,2]},{"name":"Lawn care","amount":1000,"mode":"specific_months","months":[5,6,7,8,9]}]},"debts":[{"name":"HELOC","balance":88000,"rate":0.0625,"min":450,"type":"heloc","is_heloc_io":true,"heloc_draw_ends":{"month":1,"year":2031},"deferred_until":null},{"name":"Hayley Loan","balance":20000,"rate":0.0824,"min":0,"type":"student_loan","is_heloc_io":false,"heloc_draw_ends":null,"deferred_until":{"month":12,"year":2029}},{"name":"Car Loan","balance":30000,"rate":0.05,"min":566,"type":"auto","is_heloc_io":false,"heloc_draw_ends":null,"deferred_until":{"month":5,"year":2026}},{"name":"Corey Loan","balance":19000,"rate":0.0459,"min":0,"type":"student_loan","is_heloc_io":false,"heloc_draw_ends":null,"deferred_until":{"month":12,"year":2026}},{"name":"Mortgage","balance":240000,"rate":0.0252,"min":3000,"type":"mortgage","is_heloc_io":false,"heloc_draw_ends":null,"deferred_until":null}],"attack_order":["HELOC","Hayley Loan","Car Loan","Corey Loan","Mortgage"],"monthly_committed":3450,"windfalls":[{"name":"Bonus","amount":25500,"month":9,"year":2026},{"name":"Stock vesting","amount":2000,"month":2,"year":2026},{"name":"Stock vesting","amount":2000,"month":5,"year":2026},{"name":"Stock vesting","amount":2000,"month":8,"year":2026},{"name":"Stock vesting","amount":2000,"month":11,"year":2026}],"goals":{"priority":"speed","emergency_fund_current":0,"emergency_fund_target":30000,"open_to_refi":true,"notes":"HELOC draw ends Jan 2031. Car loan starts May 2026. Deferred student loans."}};
+
+  const handleLoadTest = () => {
+    setPlanData(TEST_PLAN_DATA);
+    setStarted(true);
+    setMessages([{ role: "assistant", text: "✅ **Test data loaded** — Scott's complete plan is ready. Click the **Download Plan** button to test the Excel generator." }]);
+  };
+
+  const handleStart = () => {
+    setStarted(true);
+    setIsReturningUser(false);
+    callClaude("Hello, I'm ready to build my debt payoff plan.");
+  };
+
+  const handleStartFresh = () => {
+    // Clear saved session and start new interview
+    setMessages([]);
+    setPlanData(null);
+    conversationRef.current = [];
+    setIsReturningUser(false);
+    saveSession(accessCode, null, []);
+    setStarted(true);
+    callClaude("Hello, I'm ready to build my debt payoff plan.");
+  };
+
+  const handleSend = () => {
+    const msg = input.trim();
+    if (!msg || loading) return;
+    setInput("");
+    callClaude(msg);
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const handleDownload = async () => {
+    if (!planData) return;
+    setIsDownloading(true);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 800,
-          system: `You are an expert debt payoff advisor. Answer questions about the user's plan using their actual data only. Never invent numbers. Today: ${new Date().toLocaleDateString("en-US",{month:"long",year:"numeric"})}.\n\nUSER DATA:\n${JSON.stringify(payload,null,2)}\n\nUSER'S PLAN:\n${planText}`,
-          messages: msgs.map(m => ({ role: m.role, content: m.content })),
-        }),
+        body: JSON.stringify(planData),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || "API error");
-      setQaMessages(m => [...m, { role: "assistant", content: data.content?.[0]?.text || "" }]);
-    } catch { setQaMessages(m => [...m, { role: "assistant", content: "Sorry, hit an error. Please try again." }]); }
-    finally { setQaLoading(false); }
-  }
+      if (!response.ok) {
+        let errMsg = "Failed to generate plan";
+        try {
+          const text = await response.text();
+          try { const err = JSON.parse(text); errMsg = err.error || errMsg; }
+          catch { errMsg = `Server error (${response.status}): ${text.slice(0, 200)}`; }
+        } catch { errMsg = `Server error (${response.status})`; }
+        throw new Error(errMsg);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${planData?.meta?.name || "DebtPlan"}_DebtPayoffPlan.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Download error:", err);
+      alert("Could not generate your plan: " + err.message);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
-  const totalDebt = form.debts.reduce((a, d) => a + (parseFloat(d.balance)||0), 0);
-  const totalMins = form.debts.reduce((a, d) => a + (parseFloat(d.min)||0), 0);
+  // ── Format expiry date ──
+  const formatExpiry = (dateStr) => {
+    if (!dateStr) return null;
+    const d = new Date(dateStr);
+    return d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  };
 
-  // Shared styles
-  const inputStyle = { width:"100%", background:"#1e293b", border:"1px solid #334155", borderRadius:8, color:"#f1f5f9", fontSize:14, padding:"10px 14px", outline:"none", boxSizing:"border-box" };
-  const labelStyle = { display:"block", fontSize:12, fontWeight:600, color:"#64748b", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 };
+  // ── Days remaining ──
+  const daysRemaining = (dateStr) => {
+    if (!dateStr) return null;
+    const diff = new Date(dateStr) - new Date();
+    return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+  };
 
-  function Field({ label, name, placeholder, hint, prefix, suffix, type="text" }) {
+  // ════════════════════════════════════════
+  // SCREEN 1 — CODE ENTRY (no code yet)
+  // ════════════════════════════════════════
+  if (!accessCode) {
     return (
-      <div style={{ marginBottom:14 }}>
-        <label style={labelStyle}>{label}</label>
-        <div style={{ display:"flex", alignItems:"center", background:"#1e293b", borderRadius:8, border:"1px solid #334155", overflow:"hidden" }}>
-          {prefix && <span style={{ padding:"0 10px", color:"#475569", fontSize:14, borderRight:"1px solid #334155", lineHeight:"40px" }}>{prefix}</span>}
-          <input type={type} value={form[name]||""} onChange={e=>setField(name,e.target.value)} placeholder={placeholder} style={{ flex:1, background:"transparent", border:"none", outline:"none", color:"#f1f5f9", fontSize:14, padding:"0 12px", height:40 }} />
-          {suffix && <span style={{ padding:"0 10px", color:"#475569", fontSize:12 }}>{suffix}</span>}
-        </div>
-        {hint && <p style={{ fontSize:11, color:"#334155", marginTop:3 }}>{hint}</p>}
-      </div>
-    );
-  }
-
-  function Row2({ children }) { return <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>{children}</div>; }
-
-  function Divider({ label }) {
-    return (
-      <div style={{ display:"flex", alignItems:"center", gap:10, margin:"20px 0 14px" }}>
-        <div style={{ flex:1, height:1, background:"#1e293b" }} />
-        <span style={{ fontSize:10, fontWeight:700, color:"#334155", textTransform:"uppercase", letterSpacing:"0.1em" }}>{label}</span>
-        <div style={{ flex:1, height:1, background:"#1e293b" }} />
-      </div>
-    );
-  }
-
-  function NextBtn({ sectionId, disabled }) {
-    return (
-      <div style={{ textAlign:"right", marginTop:20, paddingBottom:4 }}>
-        <button onClick={()=>markComplete(sectionId)} disabled={disabled} style={{ background:disabled?"#1e293b":"linear-gradient(135deg,#1A7A6E,#22a89a)", color:disabled?"#334155":"white", border:"none", borderRadius:8, padding:"11px 24px", fontSize:13, fontWeight:600, cursor:disabled?"not-allowed":"pointer" }}>
-          Save & Continue →
-        </button>
-      </div>
-    );
-  }
-
-  function renderMd(text) {
-    if (!text) return null;
-    return text.split("\n").map((line, i) => {
-      if (line.startsWith("### ")) return <h3 key={i} style={{ color:"#38bdf8", fontSize:15, fontWeight:700, margin:"18px 0 6px" }}>{line.slice(4)}</h3>;
-      if (line.startsWith("## ")) return <h2 key={i} style={{ color:"#f1f5f9", fontSize:17, fontWeight:700, margin:"24px 0 8px", borderBottom:"1px solid #1e293b", paddingBottom:6 }}>{line.slice(3)}</h2>;
-      if (line.startsWith("- ")) return <div key={i} style={{ display:"flex", gap:8, color:"#cbd5e1", fontSize:13, lineHeight:1.6, margin:"3px 0 3px 6px" }}><span style={{flexShrink:0}}>•</span><span dangerouslySetInnerHTML={{__html:line.slice(2).replace(/\*\*(.*?)\*\*/g,"<strong style='color:#f1f5f9'>$1</strong>")}} /></div>;
-      if (line === "---") return <hr key={i} style={{ border:"none", borderTop:"1px solid #1e293b", margin:"18px 0" }} />;
-      if (!line.trim()) return <div key={i} style={{ height:5 }} />;
-      return <p key={i} style={{ color:"#94a3b8", fontSize:13, lineHeight:1.7, margin:"3px 0" }} dangerouslySetInnerHTML={{__html:line.replace(/\*\*(.*?)\*\*/g,"<strong style='color:#e2e8f0'>$1</strong>")}} />;
-    });
-  }
-
-  const headerStyle = { background:"#0f172a", borderBottom:"1px solid #1e293b", padding:"14px 24px", display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:100 };
-  const logoBlock = (
-    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-      <div style={{ width:30, height:30, borderRadius:8, background:"linear-gradient(135deg,#1A7A6E,#22a89a)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15 }}>🧭</div>
-      <span style={{ fontSize:15, fontWeight:800, color:"#f1f5f9", letterSpacing:"-0.02em" }}>CLEARPATH</span>
-    </div>
-  );
-
-  // ── CODE SCREEN ─────────────────────────────────────────────────────────
-  if (screen === "code") return (
-    <div style={{ minHeight:"100vh", background:"#0a0f1a", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Inter',system-ui,sans-serif", padding:24 }}>
-      <div style={{ width:"100%", maxWidth:420 }}>
-        <div style={{ textAlign:"center", marginBottom:36 }}>
-          <div style={{ display:"inline-flex", alignItems:"center", gap:10, marginBottom:20 }}>
-            <div style={{ width:44, height:44, borderRadius:12, background:"linear-gradient(135deg,#1A7A6E,#22a89a)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:22 }}>🧭</div>
-            <span style={{ fontSize:24, fontWeight:800, color:"#f1f5f9", letterSpacing:"-0.03em" }}>CLEARPATH</span>
+      <div style={{
+        minHeight: "100vh",
+        background: "linear-gradient(160deg, #0a1628 0%, #0d2040 50%, #0a1628 100%)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontFamily: "'Georgia', serif", padding: "20px",
+      }}>
+        <div style={{ maxWidth: 560, width: "100%", textAlign: "center" }}>
+          <div style={{
+            width: 64, height: 64, borderRadius: "50%",
+            background: "linear-gradient(135deg, #1a4a8a, #2d7dd2)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            margin: "0 auto 28px", boxShadow: "0 0 40px rgba(45,125,210,0.3)",
+          }}>
+            <span style={{ fontSize: 28 }}>📊</span>
           </div>
-          <h1 style={{ fontSize:26, fontWeight:700, color:"#f1f5f9", margin:"0 0 8px", letterSpacing:"-0.02em" }}>Your Debt-Free Roadmap</h1>
-          <p style={{ color:"#475569", fontSize:14 }}>Enter your access code to get started</p>
-        </div>
-        <div style={{ background:"#0f172a", borderRadius:16, border:"1px solid #1e293b", padding:28 }}>
-          <label style={labelStyle}>Access Code</label>
-          <input value={code} onChange={e=>setCode(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleValidateCode()} placeholder="CLEAR-XXXX-XXXX" style={{ ...inputStyle, fontSize:16, letterSpacing:"0.05em", fontFamily:"monospace", marginBottom:4 }} />
-          {codeError && <p style={{ color:"#f87171", fontSize:13, margin:"6px 0 10px" }}>{codeError}</p>}
-          <button onClick={handleValidateCode} disabled={codeLoading||!code.trim()} style={{ width:"100%", marginTop:14, background:"linear-gradient(135deg,#1A7A6E,#22a89a)", color:"white", border:"none", borderRadius:10, padding:14, fontSize:15, fontWeight:600, cursor:"pointer" }}>
-            {codeLoading ? "Checking…" : "Unlock My Plan →"}
-          </button>
-        </div>
-        <p style={{ textAlign:"center", color:"#1e293b", fontSize:11, marginTop:16 }}>Not financial advice · Plans based on your inputs</p>
-      </div>
-    </div>
-  );
 
-  // ── FORM SCREEN ─────────────────────────────────────────────────────────
-  if (screen === "form") {
-    const sectionContent = {
-      intro: (
-        <>
-          <p style={{ color:"#64748b", fontSize:14, lineHeight:1.7, marginBottom:16 }}>Fill out each section below. <strong style={{color:"#f1f5f9"}}>Estimates are completely fine.</strong> You only need your debts and a monthly commitment to generate a plan — everything else improves accuracy.</p>
-          <Field label="Your first name" name="name" placeholder="What should I call you?" />
-          <NextBtn sectionId="intro" />
-        </>
-      ),
-      income: (
-        <>
-          <p style={{ color:"#475569", fontSize:12, marginBottom:16 }}>Take-home = what lands in your bank after taxes. Don't include gross salary here.</p>
-          <Field label="Your monthly take-home pay" name="monthly_takehome" prefix="$" placeholder="3,500" hint="After taxes — what actually hits your account" />
-          <Row2>
-            <Field label="Partner take-home (if any)" name="partner_income" prefix="$" placeholder="0" />
-            <Field label="Other regular monthly income" name="other_income" prefix="$" placeholder="0" hint="Rental, freelance, etc." />
-          </Row2>
-          <Row2>
-            <Field label="Gross annual household salary" name="gross_annual" prefix="$" placeholder="75,000" hint="Before tax, rough is fine" />
-            <Field label="Annual bonus (if any)" name="bonus_amount" prefix="$" placeholder="0" />
-          </Row2>
-          <Field label="Bonus arrival month (if applicable)" name="bonus_month" placeholder="e.g. March" hint="Applied as a lump sum in that month" />
-          <NextBtn sectionId="income" />
-        </>
-      ),
-      expenses_regular: (
-        <>
-          <p style={{ color:"#475569", fontSize:12, marginBottom:14 }}>Monthly recurring only. If you pay car insurance every 6 months, leave this blank and enter it in Annual Expenses.</p>
-          <Divider label="Housing" />
-          <Row2>
-            <Field label="Rent or mortgage" name="rent_mortgage" prefix="$" placeholder="1,200" />
-            <Field label="Property tax (direct only)" name="property_tax" prefix="$" placeholder="0" />
-          </Row2>
-          <Row2><Field label="HOA fees" name="hoa" prefix="$" placeholder="0" /></Row2>
-          <Divider label="Utilities & Services" />
-          <Row2>
-            <Field label="Electric / gas" name="electric_gas" prefix="$" placeholder="120" />
-            <Field label="Water / sewer" name="water" prefix="$" placeholder="50" />
-          </Row2>
-          <Row2>
-            <Field label="Internet" name="internet" prefix="$" placeholder="65" />
-            <Field label="Cell phone" name="phone" prefix="$" placeholder="80" />
-          </Row2>
-          <Field label="Streaming & subscriptions (total)" name="streaming" prefix="$" placeholder="45" />
-          <Divider label="Transportation" />
-          <Row2>
-            <Field label="Car payment(s)" name="car_payment" prefix="$" placeholder="0" hint="Loan/lease only — not insurance" />
-            <Field label="Car insurance (if monthly)" name="car_insurance_monthly" prefix="$" placeholder="0" hint="Skip if you pay annually" />
-          </Row2>
-          <Field label="Gas" name="gas" prefix="$" placeholder="120" />
-          <Divider label="Food" />
-          <Row2>
-            <Field label="Groceries" name="groceries" prefix="$" placeholder="400" />
-            <Field label="Dining out / takeout" name="dining" prefix="$" placeholder="200" />
-          </Row2>
-          <Divider label="Health & Insurance" />
-          <Row2>
-            <Field label="Health insurance (out of pocket)" name="health_insurance" prefix="$" placeholder="0" hint="Skip if pre-tax from paycheck" />
-            <Field label="Medical copays / prescriptions" name="medical_copays" prefix="$" placeholder="30" />
-          </Row2>
-          <Divider label="Family & Personal" />
-          <Row2>
-            <Field label="Childcare / tuition" name="childcare" prefix="$" placeholder="0" />
-            <Field label="Pets (food, meds, grooming)" name="pets" prefix="$" placeholder="0" />
-          </Row2>
-          <Row2>
-            <Field label="Personal care (haircuts etc)" name="personal_care" prefix="$" placeholder="0" />
-            <Field label="Gym / fitness" name="gym" prefix="$" placeholder="0" />
-          </Row2>
-          <Divider label="Savings & Misc" />
-          <Row2>
-            <Field label="Auto savings transfers" name="savings_transfers" prefix="$" placeholder="0" hint="Out of pocket only" />
-            <Field label="Monthly buffer / misc" name="misc_buffer" prefix="$" placeholder="100" />
-          </Row2>
-          <Field label="Anything else monthly" name="other_monthly" prefix="$" placeholder="0" hint="Storage, donations, union dues, etc." />
-          <NextBtn sectionId="expenses_regular" />
-        </>
-      ),
-      expenses_irregular: (
-        <>
-          <p style={{ color:"#475569", fontSize:12, marginBottom:14 }}>Enter annual totals — they get divided by 12 for your plan. This is where most plans go wrong.</p>
-          <Row2>
-            <Field label="Car insurance (annual total)" name="car_insurance_annual" prefix="$" placeholder="0" />
-            <Field label="Home / renters insurance" name="home_insurance_annual" prefix="$" placeholder="0" />
-          </Row2>
-          <Row2>
-            <Field label="Amazon Prime / memberships" name="amazon_prime" prefix="$" placeholder="0" />
-            <Field label="Car registration / inspection" name="car_registration" prefix="$" placeholder="0" />
-          </Row2>
-          <Row2>
-            <Field label="Vet bills (annual estimate)" name="vet_annual" prefix="$" placeholder="0" />
-            <Field label="Holiday / gift spending" name="holiday_spending" prefix="$" placeholder="0" />
-          </Row2>
-          <Row2>
-            <Field label="Vacation / travel" name="vacation_annual" prefix="$" placeholder="0" />
-            <Field label="Other annual costs" name="other_irregular" prefix="$" placeholder="0" />
-          </Row2>
-          <NextBtn sectionId="expenses_irregular" />
-        </>
-      ),
-      debts: (
-        <>
-          <p style={{ color:"#475569", fontSize:12, marginBottom:14 }}>Add every debt. Use whatever name makes sense to you. Estimates are fine.</p>
-          {form.debts.map((debt, idx) => (
-            <div key={debt.id||idx} style={{ background:"#0a0f1a", borderRadius:12, border:"1px solid #1e293b", padding:18, marginBottom:14 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
-                <span style={{ fontSize:12, fontWeight:700, color:"#22a89a", textTransform:"uppercase", letterSpacing:"0.05em" }}>Debt #{idx+1}</span>
-                <button onClick={()=>removeDebt(idx)} style={{ background:"none", border:"none", color:"#334155", cursor:"pointer", fontSize:16 }}>✕</button>
-              </div>
-              <div style={{ marginBottom:12 }}>
-                <label style={labelStyle}>Name this debt</label>
-                <input value={debt.name} onChange={e=>updateDebt(idx,"name",e.target.value)} placeholder='"My Chase card" or "Student loan"' style={inputStyle} />
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:12 }}>
-                {[["Balance","balance","$","","5,000"],["Interest Rate %","rate","","% APR","19.99"],["Min Payment","min","$","","100"]].map(([label,key,pre,suf,ph]) => (
-                  <div key={key}>
-                    <label style={labelStyle}>{label}</label>
-                    <div style={{ display:"flex", alignItems:"center", background:"#1e293b", borderRadius:7, border:"1px solid #334155", overflow:"hidden" }}>
-                      {pre && <span style={{ padding:"0 8px", color:"#475569", fontSize:12 }}>{pre}</span>}
-                      <input value={debt[key]} onChange={e=>updateDebt(idx,key,e.target.value)} placeholder={ph} style={{ flex:1, background:"transparent", border:"none", outline:"none", color:"#f1f5f9", fontSize:13, padding:"9px 6px" }} />
-                      {suf && <span style={{ padding:"0 8px", color:"#475569", fontSize:11 }}>{suf}</span>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ marginBottom:12 }}>
-                <label style={labelStyle}>Type</label>
-                <select value={debt.type} onChange={e=>updateDebt(idx,"type",e.target.value)} style={{ ...inputStyle, padding:"9px 12px" }}>
-                  {DEBT_TYPES.map(t=><option key={t} value={t}>{t.replace("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}</option>)}
-                </select>
-              </div>
-              <div style={{ display:"flex", gap:20 }}>
-                <label style={{ display:"flex", alignItems:"center", gap:8, color:"#64748b", fontSize:12, cursor:"pointer" }}>
-                  <input type="checkbox" checked={debt.deferred} onChange={e=>updateDebt(idx,"deferred",e.target.checked)} /> Currently deferred?
-                </label>
-                <label style={{ display:"flex", alignItems:"center", gap:8, color:"#64748b", fontSize:12, cursor:"pointer" }}>
-                  <input type="checkbox" checked={debt.is_heloc_io} onChange={e=>updateDebt(idx,"is_heloc_io",e.target.checked)} /> HELOC interest-only?
-                </label>
-              </div>
-              {debt.deferred && (
-                <div style={{ marginTop:10, display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-                  <div><label style={labelStyle}>Repayment starts — Month #</label><input value={debt.deferred_until_month} onChange={e=>updateDebt(idx,"deferred_until_month",e.target.value)} placeholder="9" style={inputStyle} /></div>
-                  <div><label style={labelStyle}>Year</label><input value={debt.deferred_until_year} onChange={e=>updateDebt(idx,"deferred_until_year",e.target.value)} placeholder="2027" style={inputStyle} /></div>
+          <h1 style={{
+            color: "#ffffff", fontSize: "clamp(1.6rem, 4vw, 2.4rem)",
+            fontWeight: 700, letterSpacing: "-0.02em", margin: "0 0 12px", lineHeight: 1.2,
+          }}>Clearpath</h1>
+
+          <p style={{
+            color: "#7eb8f7", fontSize: "clamp(0.95rem, 2.2vw, 1.15rem)",
+            fontWeight: 400, letterSpacing: "0.05em", textTransform: "uppercase",
+            margin: "0 0 10px",
+          }}>AI Debt Payoff Planner</p>
+
+          <p style={{ color: "#4a7aaa", fontSize: "0.9rem", margin: "0 0 36px", lineHeight: 1.6, fontStyle: "italic" }}>
+            Your personalized path to debt freedom.
+          </p>
+
+          <div style={{
+            background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 16, padding: "24px 28px", marginBottom: 32, textAlign: "left",
+          }}>
+            {[
+              ["💬", "Conversational interview", "Talk through your numbers naturally — no spreadsheet needed"],
+              ["🧮", "Three plan options", "Avalanche, Snowball, and a custom hybrid — with real interest savings"],
+              ["📥", "Personalized Excel file", "Download a complete plan with your strategy, milestones, and projections"],
+            ].map(([icon, title, desc]) => (
+              <div key={title} style={{ display: "flex", gap: 14, marginBottom: 18, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 20, lineHeight: 1.4 }}>{icon}</span>
+                <div>
+                  <div style={{ color: "#ffffff", fontWeight: 600, fontSize: "0.95rem", marginBottom: 3 }}>{title}</div>
+                  <div style={{ color: "#8ba5c4", fontSize: "0.85rem", lineHeight: 1.5 }}>{desc}</div>
                 </div>
-              )}
-              {debt.is_heloc_io && (
-                <div style={{ marginTop:10, display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-                  <div><label style={labelStyle}>Draw period ends — Month #</label><input value={debt.heloc_draw_ends_month} onChange={e=>updateDebt(idx,"heloc_draw_ends_month",e.target.value)} placeholder="6" style={inputStyle} /></div>
-                  <div><label style={labelStyle}>Year</label><input value={debt.heloc_draw_ends_year} onChange={e=>updateDebt(idx,"heloc_draw_ends_year",e.target.value)} placeholder="2026" style={inputStyle} /></div>
-                </div>
-              )}
-            </div>
-          ))}
-          <button onClick={addDebt} style={{ width:"100%", background:"transparent", border:"2px dashed #1e293b", borderRadius:10, color:"#334155", fontSize:13, fontWeight:600, padding:13, cursor:"pointer" }}
-            onMouseEnter={e=>{e.target.style.borderColor="#22a89a";e.target.style.color="#22a89a";}}
-            onMouseLeave={e=>{e.target.style.borderColor="#1e293b";e.target.style.color="#334155";}}>
-            + Add a Debt
-          </button>
-          {form.debts.length > 0 && (
-            <div style={{ marginTop:14, padding:14, background:"#0a0f1a", borderRadius:10, border:"1px solid #1e293b", display:"flex", gap:20 }}>
-              <div><span style={{ fontSize:10, color:"#334155", display:"block", textTransform:"uppercase", letterSpacing:"0.05em" }}>Total Debt</span><span style={{ fontSize:18, fontWeight:700, color:"#f87171" }}>${totalDebt.toLocaleString()}</span></div>
-              <div><span style={{ fontSize:10, color:"#334155", display:"block", textTransform:"uppercase", letterSpacing:"0.05em" }}>Min Payments/mo</span><span style={{ fontSize:18, fontWeight:700, color:"#fbbf24" }}>${totalMins.toLocaleString()}</span></div>
-              <div><span style={{ fontSize:10, color:"#334155", display:"block", textTransform:"uppercase", letterSpacing:"0.05em" }}>Debts</span><span style={{ fontSize:18, fontWeight:700, color:"#22a89a" }}>{form.debts.length}</span></div>
-            </div>
-          )}
-          <NextBtn sectionId="debts" disabled={form.debts.length === 0} />
-        </>
-      ),
-      goals: (
-        <>
-          <div style={{ marginBottom:18 }}>
-            <label style={labelStyle}>Your #1 priority</label>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-              {PRIORITIES.map(p => (
-                <button key={p.value} onClick={()=>setField("priority",p.value)} style={{ padding:"12px 14px", borderRadius:9, border:`2px solid ${form.priority===p.value?"#22a89a":"#1e293b"}`, background:form.priority===p.value?"rgba(26,122,110,0.12)":"#0f172a", color:form.priority===p.value?"#22a89a":"#475569", textAlign:"left", cursor:"pointer" }}>
-                  <div style={{ fontWeight:700, fontSize:12, marginBottom:2 }}>{p.label}</div>
-                  <div style={{ fontSize:11 }}>{p.desc}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-          <div style={{ background:"#0a0f1a", borderRadius:10, border:"1px solid #1e293b", padding:16, marginBottom:16 }}>
-            <label style={labelStyle}>Monthly commitment to debt payoff</label>
-            {totalMins > 0 && <p style={{ color:"#475569", fontSize:12, marginBottom:10 }}>Your minimums total <strong style={{color:"#fbbf24"}}>${totalMins.toLocaleString()}/mo</strong>. Any amount above that accelerates your plan.</p>}
-            <div style={{ display:"flex", alignItems:"center", background:"#1e293b", borderRadius:8, border:"1px solid #334155", overflow:"hidden" }}>
-              <span style={{ padding:"0 10px", color:"#475569", fontSize:14, borderRight:"1px solid #334155", lineHeight:"40px" }}>$</span>
-              <input value={form.monthly_committed} onChange={e=>setField("monthly_committed",e.target.value)} placeholder={totalMins?`${totalMins} min, more = faster`:"e.g. 800"} style={{ flex:1, background:"transparent", border:"none", outline:"none", color:"#f1f5f9", fontSize:14, padding:"0 12px", height:40 }} />
-              <span style={{ padding:"0 10px", color:"#475569", fontSize:12 }}>/mo</span>
-            </div>
-          </div>
-          <Row2>
-            <Field label="Emergency fund (current)" name="emergency_fund_current" prefix="$" placeholder="0" />
-            <Field label="Emergency fund (target)" name="emergency_fund_target" prefix="$" placeholder="10,000" />
-          </Row2>
-          <label style={{ display:"flex", alignItems:"center", gap:8, color:"#64748b", fontSize:13, cursor:"pointer", marginBottom:14 }}>
-            <input type="checkbox" checked={form.open_to_refi} onChange={e=>setField("open_to_refi",e.target.checked)} /> Open to refinancing if it saves meaningful money
-          </label>
-          <Field label="Any debt you especially want gone first?" name="emotional_priority" placeholder='e.g. "my Discover card"' hint="Optional — we'll factor in emotional priorities" />
-          <Field label="Big upcoming expenses in the next 1–2 years?" name="upcoming_expenses" placeholder="Wedding, renovation, new baby…" hint="Optional" />
-          <NextBtn sectionId="goals" disabled={!form.monthly_committed} />
-        </>
-      ),
-    };
-
-    return (
-      <div style={{ minHeight:"100vh", background:"#0a0f1a", fontFamily:"'Inter',system-ui,sans-serif" }}>
-        <div style={headerStyle}>
-          {logoBlock}
-          {form.name && <span style={{ color:"#334155", fontSize:13 }}>Hi, {form.name} 👋</span>}
-        </div>
-        <div style={{ maxWidth:680, margin:"0 auto", padding:"28px 24px 80px" }}>
-          <div style={{ marginBottom:28 }}>
-            <h1 style={{ fontSize:24, fontWeight:700, color:"#f1f5f9", letterSpacing:"-0.02em", margin:"0 0 6px" }}>Build Your Debt-Free Plan</h1>
-            <p style={{ color:"#334155", fontSize:13 }}>Fill out each section, then generate your plan at the bottom.</p>
-          </div>
-
-          {SECTIONS.map(sec => {
-            const isOpen = openSection === sec.id;
-            const isDone = completedSections.has(sec.id);
-            return (
-              <div key={sec.id} style={{ marginBottom:10, borderRadius:12, border:`1px solid ${isOpen?"#22a89a":isDone?"#1e3a34":"#1e293b"}`, overflow:"hidden" }}>
-                <button onClick={()=>setOpenSection(isOpen?null:sec.id)} style={{ width:"100%", background:isOpen?"#0d2420":isDone?"#0a1f1c":"#0f172a", border:"none", padding:"16px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", cursor:"pointer" }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                    <span style={{ fontSize:18 }}>{isDone?"✅":sec.icon}</span>
-                    <span style={{ fontSize:14, fontWeight:600, color:isOpen?"#22a89a":isDone?"#4ade80":"#64748b" }}>{sec.label}</span>
-                  </div>
-                  <span style={{ color:"#334155", fontSize:11, transform:isOpen?"rotate(180deg)":"none", transition:"transform 0.2s" }}>▼</span>
-                </button>
-                {isOpen && (
-                  <div style={{ background:"#0f172a", padding:"20px 20px 6px", borderTop:"1px solid #1e293b" }}>
-                    {sectionContent[sec.id]}
-                  </div>
-                )}
               </div>
-            );
-          })}
-
-          {/* Generate */}
-          <div style={{ marginTop:28, background:"#0f172a", borderRadius:14, border:"1px solid #1e3a34", padding:24, textAlign:"center" }}>
-            <h2 style={{ fontSize:18, fontWeight:700, color:"#f1f5f9", margin:"0 0 6px" }}>Ready to see your plan?</h2>
-            {totalDebt > 0 && <p style={{ color:"#334155", fontSize:13, margin:"0 0 18px" }}>{form.debts.length} debt{form.debts.length!==1?"s":""} · <span style={{color:"#f87171"}}>${totalDebt.toLocaleString()}</span> · <span style={{color:"#22a89a"}}>${parseFloat(form.monthly_committed||0).toLocaleString()}/mo</span></p>}
-            {planError && <p style={{ color:"#f87171", fontSize:13, marginBottom:14 }}>{planError}</p>}
-            <button onClick={generatePlan} disabled={planLoading||!form.debts.length||!form.monthly_committed} style={{ background:planLoading||!form.debts.length||!form.monthly_committed?"#1e293b":"linear-gradient(135deg,#1A7A6E,#22a89a)", color:planLoading||!form.debts.length||!form.monthly_committed?"#334155":"white", border:"none", borderRadius:10, padding:"14px 36px", fontSize:15, fontWeight:700, cursor:"pointer", boxShadow:"0 4px 20px rgba(26,122,110,0.25)" }}>
-              {planLoading ? "⏳ Calculating your plan…" : "🧭 Generate My Debt-Free Plan →"}
-            </button>
-            {(!form.debts.length||!form.monthly_committed) && <p style={{ color:"#334155", fontSize:11, marginTop:8 }}>{!form.debts.length?"Add at least one debt first":"Enter your monthly commitment in Goals"}</p>}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── PLAN SCREEN ─────────────────────────────────────────────────────────
-  return (
-    <div style={{ minHeight:"100vh", background:"#0a0f1a", fontFamily:"'Inter',system-ui,sans-serif" }}>
-      <div style={headerStyle}>
-        {logoBlock}
-        <div style={{ display:"flex", gap:10 }}>
-          <button onClick={()=>setScreen("form")} style={{ background:"transparent", border:"1px solid #1e293b", borderRadius:7, color:"#475569", fontSize:12, padding:"7px 14px", cursor:"pointer" }}>← Edit</button>
-          <button onClick={async()=>{
-            try {
-              const res = await fetch("/api/generate", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(buildPayload()) });
-              if (!res.ok) throw new Error();
-              const blob = await res.blob();
-              const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-              a.download = `Clearpath_${form.name||"Plan"}.xlsx`; a.click();
-            } catch { alert("Error generating Excel. Please try again."); }
-          }} style={{ background:"linear-gradient(135deg,#C8963E,#e8b86d)", color:"#0a0f1a", border:"none", borderRadius:7, fontSize:12, fontWeight:700, padding:"7px 14px", cursor:"pointer" }}>
-            ⬇ Excel
-          </button>
-        </div>
-      </div>
-      <div style={{ maxWidth:860, margin:"0 auto", padding:"28px 20px 80px", display:"grid", gridTemplateColumns:"1fr 360px", gap:24, alignItems:"start" }}>
-        <div style={{ background:"#0f172a", borderRadius:14, border:"1px solid #1e293b", padding:28 }}>
-          <div style={{ marginBottom:20, paddingBottom:16, borderBottom:"1px solid #1e293b" }}>
-            <h1 style={{ fontSize:20, fontWeight:700, color:"#f1f5f9", margin:"0 0 4px", letterSpacing:"-0.02em" }}>{form.name?`${form.name}'s Plan`:"Your Debt-Free Plan"}</h1>
-            <div style={{ display:"flex", gap:16 }}>
-              <span style={{ fontSize:12, color:"#f87171" }}>{form.debts.length} debts · ${totalDebt.toLocaleString()}</span>
-              <span style={{ fontSize:12, color:"#22a89a" }}>${parseFloat(form.monthly_committed||0).toLocaleString()}/mo</span>
-            </div>
-          </div>
-          <div>{renderMd(planText)}</div>
-        </div>
-        <div style={{ position:"sticky", top:68 }}>
-          <div style={{ background:"#0f172a", borderRadius:14, border:"1px solid #1e293b", overflow:"hidden" }}>
-            <div style={{ padding:"14px 18px", borderBottom:"1px solid #1e293b", background:"#0d2420" }}>
-              <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:"#22a89a" }}>💬 Ask Me Anything</h3>
-              <p style={{ margin:"3px 0 0", fontSize:11, color:"#334155" }}>What-ifs · explanations · next steps</p>
-            </div>
-            <div style={{ height:340, overflowY:"auto", padding:14, display:"flex", flexDirection:"column", gap:10 }}>
-              {qaMessages.map((m,i)=>(
-                <div key={i} style={{ display:"flex", justifyContent:m.role==="user"?"flex-end":"flex-start" }}>
-                  <div style={{ maxWidth:"90%", padding:"9px 13px", borderRadius:m.role==="user"?"12px 12px 3px 12px":"12px 12px 12px 3px", background:m.role==="user"?"linear-gradient(135deg,#1A7A6E,#22a89a)":"#1e293b", color:"#f1f5f9", fontSize:12, lineHeight:1.6 }}>{m.content}</div>
-                </div>
-              ))}
-              {qaLoading && <div style={{display:"flex"}}><div style={{background:"#1e293b",borderRadius:"12px 12px 12px 3px",padding:"9px 13px"}}><span style={{color:"#334155",fontSize:12}}>Thinking…</span></div></div>}
-              <div ref={qaEndRef} />
-            </div>
-            <div style={{ padding:10, borderTop:"1px solid #1e293b" }}>
-              <div style={{ display:"flex", gap:7 }}>
-                <input value={qaInput} onChange={e=>setQaInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&!e.shiftKey&&sendQA()} placeholder="Ask a question…" style={{ flex:1, background:"#1e293b", border:"1px solid #334155", borderRadius:7, color:"#f1f5f9", fontSize:12, padding:"9px 11px", outline:"none" }} />
-                <button onClick={sendQA} disabled={qaLoading||!qaInput.trim()} style={{ background:"linear-gradient(135deg,#1A7A6E,#22a89a)", border:"none", borderRadius:7, padding:"9px 13px", cursor:"pointer", color:"white", fontSize:13 }}>→</button>
-              </div>
-            </div>
-          </div>
-          <div style={{ marginTop:10, display:"flex", flexDirection:"column", gap:5 }}>
-            {["What should I do first this month?","What if I get a $3,000 bonus?","Explain the avalanche method"].map(q=>(
-              <button key={q} onClick={()=>setQaInput(q)} style={{ background:"#0f172a", border:"1px solid #1e293b", borderRadius:7, color:"#334155", fontSize:11, padding:"7px 11px", cursor:"pointer", textAlign:"left" }}
-                onMouseEnter={e=>{e.target.style.color="#22a89a";e.target.style.borderColor="#22a89a";}}
-                onMouseLeave={e=>{e.target.style.color="#334155";e.target.style.borderColor="#1e293b";}}>{q}</button>
             ))}
           </div>
+
+          {/* Code entry */}
+          <div style={{ marginBottom: 16 }}>
+            <input
+              type="text"
+              value={codeInput}
+              onChange={e => { setCodeInput(e.target.value.toUpperCase()); setCodeError(null); }}
+              onKeyDown={handleCodeKeyDown}
+              placeholder="Enter your access code"
+              style={{
+                width: "100%", boxSizing: "border-box",
+                background: "rgba(255,255,255,0.07)", border: `1px solid ${codeError ? '#ff6b6b' : 'rgba(255,255,255,0.15)'}`,
+                borderRadius: 12, padding: "14px 18px", color: "#ffffff",
+                fontSize: "1rem", fontFamily: "monospace", letterSpacing: "0.1em",
+                outline: "none", marginBottom: 10, textAlign: "center",
+              }}
+            />
+            {codeError && (
+              <p style={{ color: "#ff6b6b", fontSize: "0.85rem", margin: "0 0 10px" }}>⚠ {codeError}</p>
+            )}
+            <button
+              onClick={handleValidateCode}
+              disabled={codeLoading || !codeInput.trim()}
+              style={{
+                background: codeLoading || !codeInput.trim()
+                  ? "rgba(255,255,255,0.1)"
+                  : "linear-gradient(135deg, #1a5fa8, #2d7dd2)",
+                color: codeLoading || !codeInput.trim() ? "#4a6a8a" : "#ffffff",
+                border: "none", borderRadius: 12, padding: "16px 40px",
+                fontSize: "1rem", fontWeight: 700, cursor: codeLoading || !codeInput.trim() ? "default" : "pointer",
+                letterSpacing: "0.02em", width: "100%",
+                boxShadow: codeLoading || !codeInput.trim() ? "none" : "0 4px 24px rgba(45,125,210,0.4)",
+              }}
+            >
+              {codeLoading ? "Checking..." : "Unlock My Plan →"}
+            </button>
+          </div>
+
+          <button
+            onClick={handleLoadTest}
+            style={{
+              background: "transparent", color: "#4a6a8a",
+              border: "1px dashed #4a6a8a", borderRadius: 12,
+              padding: "10px 24px", fontSize: "0.8rem", fontWeight: 600,
+              cursor: "pointer", width: "100%",
+            }}
+          >
+            🧪 Load Test Data (skip interview)
+          </button>
+
+          <p style={{ color: "#4a6a8a", fontSize: "0.78rem", marginTop: 16 }}>
+            Takes 20–30 minutes · Have account balances and details handy if possible
+          </p>
         </div>
       </div>
+    );
+  }
+
+  // ════════════════════════════════════════
+  // SCREEN 2 — RETURNING USER
+  // ════════════════════════════════════════
+  if (accessCode && isReturningUser && !started) {
+    const days = daysRemaining(expiresAt);
+    return (
+      <div style={{
+        minHeight: "100vh",
+        background: "linear-gradient(160deg, #0a1628 0%, #0d2040 50%, #0a1628 100%)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontFamily: "'Georgia', serif", padding: "20px",
+      }}>
+        <div style={{ maxWidth: 560, width: "100%", textAlign: "center" }}>
+          <div style={{
+            width: 64, height: 64, borderRadius: "50%",
+            background: "linear-gradient(135deg, #1a7a4a, #22a060)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            margin: "0 auto 28px", boxShadow: "0 0 40px rgba(34,160,96,0.3)",
+          }}>
+            <span style={{ fontSize: 28 }}>✅</span>
+          </div>
+
+          <h1 style={{ color: "#ffffff", fontSize: "1.8rem", fontWeight: 700, margin: "0 0 8px" }}>
+            Welcome back!
+          </h1>
+          <p style={{ color: "#5ddb9a", fontSize: "0.9rem", margin: "0 0 8px" }}>
+            Your saved plan is ready.
+          </p>
+          {expiresAt && (
+            <p style={{ color: "#4a7aaa", fontSize: "0.8rem", margin: "0 0 32px" }}>
+              Access expires {formatExpiry(expiresAt)}
+              {days <= 14 && <span style={{ color: "#ffaa44" }}> · {days} days remaining</span>}
+            </p>
+          )}
+
+          {planData && (
+            <div style={{
+              background: "rgba(34,160,96,0.1)", border: "1px solid rgba(34,160,96,0.25)",
+              borderRadius: 14, padding: "20px 24px", marginBottom: 24, textAlign: "left",
+            }}>
+              <div style={{ color: "#5ddb9a", fontWeight: 700, fontSize: "0.95rem", marginBottom: 12 }}>
+                📊 Your saved plan
+              </div>
+              {[
+                ["Name", planData.meta?.name],
+                ["Strategy", planData.meta?.strategy],
+                ["Generated", planData.meta?.generated],
+                ["Total debt", planData.debts ? `$${planData.debts.reduce((s, d) => s + d.balance, 0).toLocaleString()}` : "—"],
+              ].map(([label, val]) => val ? (
+                <div key={label} style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                  <span style={{ color: "#8ba5c4", fontSize: "0.85rem" }}>{label}</span>
+                  <span style={{ color: "#ffffff", fontSize: "0.85rem", fontWeight: 600 }}>{val}</span>
+                </div>
+              ) : null)}
+            </div>
+          )}
+
+          <button
+            onClick={handleDownload}
+            disabled={isDownloading || !planData}
+            style={{
+              background: "linear-gradient(135deg, #1a7a4a, #22a060)",
+              color: "#fff", border: "none", borderRadius: 12,
+              padding: "16px 40px", fontSize: "1rem", fontWeight: 700,
+              cursor: "pointer", width: "100%", marginBottom: 12,
+              boxShadow: "0 4px 24px rgba(34,160,96,0.4)",
+            }}
+          >
+            {isDownloading ? "⏳ Generating..." : "⬇ Download My Excel Plan"}
+          </button>
+
+          <button
+            onClick={handleStartFresh}
+            style={{
+              background: "linear-gradient(135deg, #1a5fa8, #2d7dd2)",
+              color: "#fff", border: "none", borderRadius: 12,
+              padding: "16px 40px", fontSize: "1rem", fontWeight: 700,
+              cursor: "pointer", width: "100%", marginBottom: 12,
+              boxShadow: "0 4px 24px rgba(45,125,210,0.4)",
+            }}
+          >
+            🔄 Start Fresh Interview
+          </button>
+
+          <p style={{ color: "#4a6a8a", fontSize: "0.75rem", marginTop: 8 }}>
+            Starting fresh will overwrite your saved plan
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ════════════════════════════════════════
+  // SCREEN 3 — FIRST TIME LANDING
+  // ════════════════════════════════════════
+  if (!started) {
+    return (
+      <div style={{
+        minHeight: "100vh",
+        background: "linear-gradient(160deg, #0a1628 0%, #0d2040 50%, #0a1628 100%)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontFamily: "'Georgia', serif", padding: "20px",
+      }}>
+        <div style={{ maxWidth: 560, width: "100%", textAlign: "center" }}>
+          <div style={{
+            width: 64, height: 64, borderRadius: "50%",
+            background: "linear-gradient(135deg, #1a4a8a, #2d7dd2)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            margin: "0 auto 28px", boxShadow: "0 0 40px rgba(45,125,210,0.3)",
+          }}>
+            <span style={{ fontSize: 28 }}>📊</span>
+          </div>
+
+          <h1 style={{
+            color: "#ffffff", fontSize: "clamp(1.6rem, 4vw, 2.4rem)",
+            fontWeight: 700, letterSpacing: "-0.02em", margin: "0 0 12px", lineHeight: 1.2,
+          }}>Clearpath</h1>
+
+          <p style={{
+            color: "#7eb8f7", fontSize: "clamp(0.95rem, 2.2vw, 1.15rem)",
+            fontWeight: 400, letterSpacing: "0.05em", textTransform: "uppercase", margin: "0 0 10px",
+          }}>AI Debt Payoff Planner</p>
+
+          <p style={{ color: "#5ddb9a", fontSize: "0.85rem", margin: "0 0 32px" }}>
+            ✅ Code verified — you're all set!
+            {expiresAt && <span style={{ color: "#4a7aaa" }}> · Access valid until {formatExpiry(expiresAt)}</span>}
+          </p>
+
+          <div style={{
+            background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 16, padding: "24px 28px", marginBottom: 32, textAlign: "left",
+          }}>
+            {[
+              ["💬", "Conversational interview", "Talk through your numbers naturally — no spreadsheet needed"],
+              ["🧮", "Three plan options", "Avalanche, Snowball, and a custom hybrid — with real interest savings"],
+              ["📥", "Personalized Excel file", "Download a complete plan with your strategy, milestones, and projections"],
+            ].map(([icon, title, desc]) => (
+              <div key={title} style={{ display: "flex", gap: 14, marginBottom: 18, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 20, lineHeight: 1.4 }}>{icon}</span>
+                <div>
+                  <div style={{ color: "#ffffff", fontWeight: 600, fontSize: "0.95rem", marginBottom: 3 }}>{title}</div>
+                  <div style={{ color: "#8ba5c4", fontSize: "0.85rem", lineHeight: 1.5 }}>{desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <button
+            onClick={handleStart}
+            style={{
+              background: "linear-gradient(135deg, #1a5fa8, #2d7dd2)",
+              color: "#ffffff", border: "none", borderRadius: 12,
+              padding: "16px 40px", fontSize: "1rem", fontWeight: 700,
+              cursor: "pointer", letterSpacing: "0.02em",
+              boxShadow: "0 4px 24px rgba(45,125,210,0.4)", width: "100%",
+            }}
+            onMouseEnter={e => e.target.style.transform = "translateY(-2px)"}
+            onMouseLeave={e => e.target.style.transform = "translateY(0)"}
+          >
+            Build My Plan →
+          </button>
+
+          <p style={{ color: "#4a6a8a", fontSize: "0.78rem", marginTop: 16 }}>
+            Takes 20–30 minutes · Have account balances and details handy if possible
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ════════════════════════════════════════
+  // SCREEN 4 — CHAT
+  // ════════════════════════════════════════
+  return (
+    <div style={{
+      minHeight: "100vh", background: "#0a1628",
+      display: "flex", flexDirection: "column", fontFamily: "'Georgia', serif",
+    }}>
+      {/* Header */}
+      <div style={{
+        background: "rgba(10,22,40,0.95)", borderBottom: "1px solid rgba(255,255,255,0.07)",
+        padding: "14px 20px", display: "flex", alignItems: "center", gap: 12,
+        position: "sticky", top: 0, zIndex: 10, backdropFilter: "blur(10px)",
+      }}>
+        <div style={{
+          width: 36, height: 36, borderRadius: "50%",
+          background: "linear-gradient(135deg, #1a4a8a, #2d7dd2)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 18, flexShrink: 0,
+        }}>📊</div>
+        <div>
+          <div style={{ color: "#ffffff", fontWeight: 700, fontSize: "0.95rem" }}>Clearpath — AI Debt Payoff Planner</div>
+          <div style={{ color: "#4a7aaa", fontSize: "0.75rem" }}>
+            {loading ? "Thinking..." : planData ? "✅ Plan ready" : "Interview in progress"}
+            {expiresAt && <span style={{ marginLeft: 8, color: "#2a4a6a" }}>· Expires {formatExpiry(expiresAt)}</span>}
+          </div>
+        </div>
+        {planData && (
+          <button
+            onClick={handleDownload}
+            disabled={isDownloading}
+            style={{
+              marginLeft: "auto",
+              background: "linear-gradient(135deg, #1a7a4a, #22a060)",
+              color: "#fff", border: "none", borderRadius: 8,
+              padding: "8px 18px", fontSize: "0.85rem", fontWeight: 700,
+              cursor: "pointer", boxShadow: "0 2px 12px rgba(34,160,96,0.4)",
+            }}
+          >
+            {isDownloading ? "⏳" : "⬇ Download Plan"}
+          </button>
+        )}
+      </div>
+
+      {/* Messages */}
+      <div style={{
+        flex: 1, overflowY: "auto", padding: "20px 16px",
+        maxWidth: 760, width: "100%", margin: "0 auto", boxSizing: "border-box",
+      }}>
+        {messages.map((msg, i) => (
+          <div key={i} style={{
+            display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
+            marginBottom: 16, gap: 10, alignItems: "flex-start",
+          }}>
+            {msg.role === "assistant" && (
+              <div style={{
+                width: 30, height: 30, borderRadius: "50%",
+                background: "linear-gradient(135deg, #1a4a8a, #2d7dd2)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 14, flexShrink: 0, marginTop: 4,
+              }}>📊</div>
+            )}
+            <div style={{
+              maxWidth: "80%",
+              background: msg.role === "user"
+                ? "linear-gradient(135deg, #1a5fa8, #2d7dd2)"
+                : "rgba(255,255,255,0.05)",
+              border: msg.role === "user" ? "none" : "1px solid rgba(255,255,255,0.08)",
+              borderRadius: msg.role === "user" ? "18px 18px 4px 18px" : "4px 18px 18px 18px",
+              padding: "12px 16px", color: "#e8f0ff", fontSize: "0.9rem", lineHeight: 1.6,
+            }}>
+              {msg.role === "assistant"
+                ? <div dangerouslySetInnerHTML={{ __html: parseMarkdown(msg.text) }} />
+                : msg.text
+              }
+            </div>
+          </div>
+        ))}
+
+        {loading && (
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 16 }}>
+            <div style={{
+              width: 30, height: 30, borderRadius: "50%",
+              background: "linear-gradient(135deg, #1a4a8a, #2d7dd2)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 14, flexShrink: 0,
+            }}>📊</div>
+            <div style={{
+              background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: "4px 18px 18px 18px", padding: "14px 18px",
+              display: "flex", gap: 6, alignItems: "center",
+            }}>
+              {[0,1,2].map(i => (
+                <div key={i} style={{
+                  width: 7, height: 7, borderRadius: "50%", background: "#2d7dd2",
+                  animation: "pulse 1.2s ease-in-out infinite",
+                  animationDelay: `${i * 0.2}s`,
+                }} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div style={{
+            background: "rgba(200,50,50,0.15)", border: "1px solid rgba(200,50,50,0.3)",
+            borderRadius: 10, padding: "12px 16px", color: "#ff8080",
+            fontSize: "0.85rem", marginBottom: 16,
+          }}>
+            ⚠ {error}
+          </div>
+        )}
+
+        {planData && (
+          <div style={{
+            background: "rgba(34,160,96,0.1)", border: "1px solid rgba(34,160,96,0.3)",
+            borderRadius: 12, padding: "16px 20px", marginBottom: 16, textAlign: "center",
+          }}>
+            <div style={{ color: "#5ddb9a", fontWeight: 700, fontSize: "1rem", marginBottom: 6 }}>
+              🎉 Your plan is ready!
+            </div>
+            <div style={{ color: "#8ba5c4", fontSize: "0.85rem", marginBottom: 14 }}>
+              Strategy: <strong style={{ color: "#ffffff" }}>{planData.meta?.strategy}</strong>
+              &nbsp;·&nbsp; Prepared for: <strong style={{ color: "#ffffff" }}>{planData.meta?.name}</strong>
+            </div>
+            <button
+              onClick={handleDownload}
+              disabled={isDownloading}
+              style={{
+                background: "linear-gradient(135deg, #1a7a4a, #22a060)",
+                color: "#fff", border: "none", borderRadius: 10,
+                padding: "12px 28px", fontSize: "0.95rem", fontWeight: 700,
+                cursor: "pointer", boxShadow: "0 2px 16px rgba(34,160,96,0.4)",
+              }}
+            >
+              {isDownloading ? "⏳ Generating..." : "⬇ Download Your Excel Plan"}
+            </button>
+            <div style={{ color: "#4a7a5a", fontSize: "0.75rem", marginTop: 8 }}>
+              Your plan is saved — return anytime with your access code to download again
+            </div>
+          </div>
+        )}
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input */}
+      <div style={{
+        borderTop: "1px solid rgba(255,255,255,0.07)",
+        background: "rgba(10,22,40,0.98)", padding: "14px 16px",
+        position: "sticky", bottom: 0,
+      }}>
+        <div style={{ maxWidth: 760, margin: "0 auto", display: "flex", gap: 10, alignItems: "flex-end" }}>
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={loading ? "Waiting for response..." : "Type your answer here..."}
+            disabled={loading}
+            rows={1}
+            style={{
+              flex: 1, background: "rgba(255,255,255,0.06)",
+              border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12,
+              padding: "12px 16px", color: "#e8f0ff", fontSize: "0.9rem",
+              resize: "none", fontFamily: "inherit", lineHeight: 1.5,
+              outline: "none", minHeight: 46, maxHeight: 140, overflowY: "auto",
+            }}
+            onInput={e => {
+              e.target.style.height = "auto";
+              e.target.style.height = Math.min(e.target.scrollHeight, 140) + "px";
+            }}
+          />
+          <button
+            onClick={handleSend}
+            disabled={loading || !input.trim()}
+            style={{
+              background: loading || !input.trim()
+                ? "rgba(255,255,255,0.08)"
+                : "linear-gradient(135deg, #1a5fa8, #2d7dd2)",
+              color: loading || !input.trim() ? "#4a6a8a" : "#ffffff",
+              border: "none", borderRadius: 12, width: 46, height: 46,
+              fontSize: "1.2rem", cursor: loading || !input.trim() ? "default" : "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              flexShrink: 0, transition: "all 0.2s",
+            }}
+          >↑</button>
+        </div>
+        <div style={{
+          maxWidth: 760, margin: "8px auto 0", color: "#2a4a6a",
+          fontSize: "0.72rem", textAlign: "center",
+        }}>
+          Press Enter to send · Shift+Enter for new line
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes pulse {
+          0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+          40% { transform: scale(1); opacity: 1; }
+        }
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+      `}</style>
     </div>
   );
 }
