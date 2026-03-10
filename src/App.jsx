@@ -127,6 +127,46 @@ const SECTIONS = [
   { id: "goals", label: "🎯 Goals & Commitment", icon: "🎯" },
 ];
 
+// ── Shared styles (defined once, outside App) ─────────────────────────────────
+const inputStyle = { width:"100%", background:"#1e293b", border:"1px solid #334155", borderRadius:8, color:"#f1f5f9", fontSize:14, padding:"10px 14px", outline:"none", boxSizing:"border-box" };
+const labelStyle = { display:"block", fontSize:12, fontWeight:600, color:"#64748b", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 };
+
+function Field({ label, name, placeholder, hint, prefix, suffix, type="text", form, setField }) {
+  return (
+    <div style={{ marginBottom:14 }}>
+      <label style={labelStyle}>{label}</label>
+      <div style={{ display:"flex", alignItems:"center", background:"#1e293b", borderRadius:8, border:"1px solid #334155", overflow:"hidden" }}>
+        {prefix && <span style={{ padding:"0 10px", color:"#475569", fontSize:14, borderRight:"1px solid #334155", lineHeight:"40px" }}>{prefix}</span>}
+        <input type={type} value={form[name]||""} onChange={e=>setField(name,e.target.value)} placeholder={placeholder} style={{ flex:1, background:"transparent", border:"none", outline:"none", color:"#f1f5f9", fontSize:14, padding:"0 12px", height:40 }} />
+        {suffix && <span style={{ padding:"0 10px", color:"#475569", fontSize:12 }}>{suffix}</span>}
+      </div>
+      {hint && <p style={{ fontSize:11, color:"#334155", marginTop:3 }}>{hint}</p>}
+    </div>
+  );
+}
+
+function Row2({ children }) { return <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>{children}</div>; }
+
+function Divider({ label }) {
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:10, margin:"20px 0 14px" }}>
+      <div style={{ flex:1, height:1, background:"#1e293b" }} />
+      <span style={{ fontSize:10, fontWeight:700, color:"#334155", textTransform:"uppercase", letterSpacing:"0.1em" }}>{label}</span>
+      <div style={{ flex:1, height:1, background:"#1e293b" }} />
+    </div>
+  );
+}
+
+function NextBtn({ sectionId, disabled, markComplete }) {
+  return (
+    <div style={{ textAlign:"right", marginTop:20, paddingBottom:4 }}>
+      <button onClick={()=>markComplete(sectionId)} disabled={disabled} style={{ background:disabled?"#1e293b":"linear-gradient(135deg,#1A7A6E,#22a89a)", color:disabled?"#334155":"white", border:"none", borderRadius:8, padding:"11px 24px", fontSize:13, fontWeight:600, cursor:disabled?"not-allowed":"pointer" }}>
+        Save & Continue →
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   const [screen, setScreen] = useState("code");
   const [code, setCode] = useState("");
@@ -306,45 +346,6 @@ export default function App() {
   const totalMins = form.debts.reduce((a, d) => a + (parseFloat(d.min)||0), 0);
 
   // Shared styles
-  const inputStyle = { width:"100%", background:"#1e293b", border:"1px solid #334155", borderRadius:8, color:"#f1f5f9", fontSize:14, padding:"10px 14px", outline:"none", boxSizing:"border-box" };
-  const labelStyle = { display:"block", fontSize:12, fontWeight:600, color:"#64748b", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 };
-
-  function Field({ label, name, placeholder, hint, prefix, suffix, type="text" }) {
-    return (
-      <div style={{ marginBottom:14 }}>
-        <label style={labelStyle}>{label}</label>
-        <div style={{ display:"flex", alignItems:"center", background:"#1e293b", borderRadius:8, border:"1px solid #334155", overflow:"hidden" }}>
-          {prefix && <span style={{ padding:"0 10px", color:"#475569", fontSize:14, borderRight:"1px solid #334155", lineHeight:"40px" }}>{prefix}</span>}
-          <input type={type} value={form[name]||""} onChange={e=>setField(name,e.target.value)} placeholder={placeholder} style={{ flex:1, background:"transparent", border:"none", outline:"none", color:"#f1f5f9", fontSize:14, padding:"0 12px", height:40 }} />
-          {suffix && <span style={{ padding:"0 10px", color:"#475569", fontSize:12 }}>{suffix}</span>}
-        </div>
-        {hint && <p style={{ fontSize:11, color:"#334155", marginTop:3 }}>{hint}</p>}
-      </div>
-    );
-  }
-
-  function Row2({ children }) { return <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>{children}</div>; }
-
-  function Divider({ label }) {
-    return (
-      <div style={{ display:"flex", alignItems:"center", gap:10, margin:"20px 0 14px" }}>
-        <div style={{ flex:1, height:1, background:"#1e293b" }} />
-        <span style={{ fontSize:10, fontWeight:700, color:"#334155", textTransform:"uppercase", letterSpacing:"0.1em" }}>{label}</span>
-        <div style={{ flex:1, height:1, background:"#1e293b" }} />
-      </div>
-    );
-  }
-
-  function NextBtn({ sectionId, disabled }) {
-    return (
-      <div style={{ textAlign:"right", marginTop:20, paddingBottom:4 }}>
-        <button onClick={()=>markComplete(sectionId)} disabled={disabled} style={{ background:disabled?"#1e293b":"linear-gradient(135deg,#1A7A6E,#22a89a)", color:disabled?"#334155":"white", border:"none", borderRadius:8, padding:"11px 24px", fontSize:13, fontWeight:600, cursor:disabled?"not-allowed":"pointer" }}>
-          Save & Continue →
-        </button>
-      </div>
-    );
-  }
-
   function renderMd(text) {
     if (!text) return null;
     return text.split("\n").map((line, i) => {
@@ -396,24 +397,24 @@ export default function App() {
       intro: (
         <>
           <p style={{ color:"#64748b", fontSize:14, lineHeight:1.7, marginBottom:16 }}>Fill out each section below. <strong style={{color:"#f1f5f9"}}>Estimates are completely fine.</strong> You only need your debts and a monthly commitment to generate a plan — everything else improves accuracy.</p>
-          <Field label="Your first name" name="name" placeholder="What should I call you?" />
-          <NextBtn sectionId="intro" />
+          <Field form={form} setField={setField} label="Your first name" name="name" placeholder="What should I call you?" />
+          <NextBtn markComplete={markComplete} sectionId="intro" />
         </>
       ),
       income: (
         <>
           <p style={{ color:"#475569", fontSize:12, marginBottom:16 }}>Take-home = what lands in your bank after taxes. Don't include gross salary here.</p>
-          <Field label="Your monthly take-home pay" name="monthly_takehome" prefix="$" placeholder="3,500" hint="After taxes — what actually hits your account" />
+          <Field form={form} setField={setField} label="Your monthly take-home pay" name="monthly_takehome" prefix="$" placeholder="3,500" hint="After taxes — what actually hits your account" />
           <Row2>
-            <Field label="Partner take-home (if any)" name="partner_income" prefix="$" placeholder="0" />
-            <Field label="Other regular monthly income" name="other_income" prefix="$" placeholder="0" hint="Rental, freelance, etc." />
+            <Field form={form} setField={setField} label="Partner take-home (if any)" name="partner_income" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Other regular monthly income" name="other_income" prefix="$" placeholder="0" hint="Rental, freelance, etc." />
           </Row2>
           <Row2>
-            <Field label="Gross annual household salary" name="gross_annual" prefix="$" placeholder="75,000" hint="Before tax, rough is fine" />
-            <Field label="Annual bonus (if any)" name="bonus_amount" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Gross annual household salary" name="gross_annual" prefix="$" placeholder="75,000" hint="Before tax, rough is fine" />
+            <Field form={form} setField={setField} label="Annual bonus (if any)" name="bonus_amount" prefix="$" placeholder="0" />
           </Row2>
-          <Field label="Bonus arrival month (if applicable)" name="bonus_month" placeholder="e.g. March" hint="Applied as a lump sum in that month" />
-          <NextBtn sectionId="income" />
+          <Field form={form} setField={setField} label="Bonus arrival month (if applicable)" name="bonus_month" placeholder="e.g. March" hint="Applied as a lump sum in that month" />
+          <NextBtn markComplete={markComplete} sectionId="income" />
         </>
       ),
       expenses_regular: (
@@ -421,74 +422,74 @@ export default function App() {
           <p style={{ color:"#475569", fontSize:12, marginBottom:14 }}>Monthly recurring only. If you pay car insurance every 6 months, leave this blank and enter it in Annual Expenses.</p>
           <Divider label="Housing" />
           <Row2>
-            <Field label="Rent or mortgage" name="rent_mortgage" prefix="$" placeholder="1,200" />
-            <Field label="Property tax (direct only)" name="property_tax" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Rent or mortgage" name="rent_mortgage" prefix="$" placeholder="1,200" />
+            <Field form={form} setField={setField} label="Property tax (direct only)" name="property_tax" prefix="$" placeholder="0" />
           </Row2>
-          <Row2><Field label="HOA fees" name="hoa" prefix="$" placeholder="0" /></Row2>
+          <Row2><Field form={form} setField={setField} label="HOA fees" name="hoa" prefix="$" placeholder="0" /></Row2>
           <Divider label="Utilities & Services" />
           <Row2>
-            <Field label="Electric / gas" name="electric_gas" prefix="$" placeholder="120" />
-            <Field label="Water / sewer" name="water" prefix="$" placeholder="50" />
+            <Field form={form} setField={setField} label="Electric / gas" name="electric_gas" prefix="$" placeholder="120" />
+            <Field form={form} setField={setField} label="Water / sewer" name="water" prefix="$" placeholder="50" />
           </Row2>
           <Row2>
-            <Field label="Internet" name="internet" prefix="$" placeholder="65" />
-            <Field label="Cell phone" name="phone" prefix="$" placeholder="80" />
+            <Field form={form} setField={setField} label="Internet" name="internet" prefix="$" placeholder="65" />
+            <Field form={form} setField={setField} label="Cell phone" name="phone" prefix="$" placeholder="80" />
           </Row2>
-          <Field label="Streaming & subscriptions (total)" name="streaming" prefix="$" placeholder="45" />
+          <Field form={form} setField={setField} label="Streaming & subscriptions (total)" name="streaming" prefix="$" placeholder="45" />
           <Divider label="Transportation" />
           <Row2>
-            <Field label="Car payment(s)" name="car_payment" prefix="$" placeholder="0" hint="Loan/lease only — not insurance" />
-            <Field label="Car insurance (if monthly)" name="car_insurance_monthly" prefix="$" placeholder="0" hint="Skip if you pay annually" />
+            <Field form={form} setField={setField} label="Car payment(s)" name="car_payment" prefix="$" placeholder="0" hint="Loan/lease only — not insurance" />
+            <Field form={form} setField={setField} label="Car insurance (if monthly)" name="car_insurance_monthly" prefix="$" placeholder="0" hint="Skip if you pay annually" />
           </Row2>
-          <Field label="Gas" name="gas" prefix="$" placeholder="120" />
+          <Field form={form} setField={setField} label="Gas" name="gas" prefix="$" placeholder="120" />
           <Divider label="Food" />
           <Row2>
-            <Field label="Groceries" name="groceries" prefix="$" placeholder="400" />
-            <Field label="Dining out / takeout" name="dining" prefix="$" placeholder="200" />
+            <Field form={form} setField={setField} label="Groceries" name="groceries" prefix="$" placeholder="400" />
+            <Field form={form} setField={setField} label="Dining out / takeout" name="dining" prefix="$" placeholder="200" />
           </Row2>
           <Divider label="Health & Insurance" />
           <Row2>
-            <Field label="Health insurance (out of pocket)" name="health_insurance" prefix="$" placeholder="0" hint="Skip if pre-tax from paycheck" />
-            <Field label="Medical copays / prescriptions" name="medical_copays" prefix="$" placeholder="30" />
+            <Field form={form} setField={setField} label="Health insurance (out of pocket)" name="health_insurance" prefix="$" placeholder="0" hint="Skip if pre-tax from paycheck" />
+            <Field form={form} setField={setField} label="Medical copays / prescriptions" name="medical_copays" prefix="$" placeholder="30" />
           </Row2>
           <Divider label="Family & Personal" />
           <Row2>
-            <Field label="Childcare / tuition" name="childcare" prefix="$" placeholder="0" />
-            <Field label="Pets (food, meds, grooming)" name="pets" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Childcare / tuition" name="childcare" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Pets (food, meds, grooming)" name="pets" prefix="$" placeholder="0" />
           </Row2>
           <Row2>
-            <Field label="Personal care (haircuts etc)" name="personal_care" prefix="$" placeholder="0" />
-            <Field label="Gym / fitness" name="gym" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Personal care (haircuts etc)" name="personal_care" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Gym / fitness" name="gym" prefix="$" placeholder="0" />
           </Row2>
           <Divider label="Savings & Misc" />
           <Row2>
-            <Field label="Auto savings transfers" name="savings_transfers" prefix="$" placeholder="0" hint="Out of pocket only" />
-            <Field label="Monthly buffer / misc" name="misc_buffer" prefix="$" placeholder="100" />
+            <Field form={form} setField={setField} label="Auto savings transfers" name="savings_transfers" prefix="$" placeholder="0" hint="Out of pocket only" />
+            <Field form={form} setField={setField} label="Monthly buffer / misc" name="misc_buffer" prefix="$" placeholder="100" />
           </Row2>
-          <Field label="Anything else monthly" name="other_monthly" prefix="$" placeholder="0" hint="Storage, donations, union dues, etc." />
-          <NextBtn sectionId="expenses_regular" />
+          <Field form={form} setField={setField} label="Anything else monthly" name="other_monthly" prefix="$" placeholder="0" hint="Storage, donations, union dues, etc." />
+          <NextBtn markComplete={markComplete} sectionId="expenses_regular" />
         </>
       ),
       expenses_irregular: (
         <>
           <p style={{ color:"#475569", fontSize:12, marginBottom:14 }}>Enter annual totals — they get divided by 12 for your plan. This is where most plans go wrong.</p>
           <Row2>
-            <Field label="Car insurance (annual total)" name="car_insurance_annual" prefix="$" placeholder="0" />
-            <Field label="Home / renters insurance" name="home_insurance_annual" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Car insurance (annual total)" name="car_insurance_annual" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Home / renters insurance" name="home_insurance_annual" prefix="$" placeholder="0" />
           </Row2>
           <Row2>
-            <Field label="Amazon Prime / memberships" name="amazon_prime" prefix="$" placeholder="0" />
-            <Field label="Car registration / inspection" name="car_registration" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Amazon Prime / memberships" name="amazon_prime" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Car registration / inspection" name="car_registration" prefix="$" placeholder="0" />
           </Row2>
           <Row2>
-            <Field label="Vet bills (annual estimate)" name="vet_annual" prefix="$" placeholder="0" />
-            <Field label="Holiday / gift spending" name="holiday_spending" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Vet bills (annual estimate)" name="vet_annual" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Holiday / gift spending" name="holiday_spending" prefix="$" placeholder="0" />
           </Row2>
           <Row2>
-            <Field label="Vacation / travel" name="vacation_annual" prefix="$" placeholder="0" />
-            <Field label="Other annual costs" name="other_irregular" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Vacation / travel" name="vacation_annual" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Other annual costs" name="other_irregular" prefix="$" placeholder="0" />
           </Row2>
-          <NextBtn sectionId="expenses_irregular" />
+          <NextBtn markComplete={markComplete} sectionId="expenses_irregular" />
         </>
       ),
       debts: (
@@ -556,7 +557,7 @@ export default function App() {
               <div><span style={{ fontSize:10, color:"#334155", display:"block", textTransform:"uppercase", letterSpacing:"0.05em" }}>Debts</span><span style={{ fontSize:18, fontWeight:700, color:"#22a89a" }}>{form.debts.length}</span></div>
             </div>
           )}
-          <NextBtn sectionId="debts" disabled={form.debts.length === 0} />
+          <NextBtn markComplete={markComplete} sectionId="debts" disabled={form.debts.length === 0} />
         </>
       ),
       goals: (
@@ -582,15 +583,15 @@ export default function App() {
             </div>
           </div>
           <Row2>
-            <Field label="Emergency fund (current)" name="emergency_fund_current" prefix="$" placeholder="0" />
-            <Field label="Emergency fund (target)" name="emergency_fund_target" prefix="$" placeholder="10,000" />
+            <Field form={form} setField={setField} label="Emergency fund (current)" name="emergency_fund_current" prefix="$" placeholder="0" />
+            <Field form={form} setField={setField} label="Emergency fund (target)" name="emergency_fund_target" prefix="$" placeholder="10,000" />
           </Row2>
           <label style={{ display:"flex", alignItems:"center", gap:8, color:"#64748b", fontSize:13, cursor:"pointer", marginBottom:14 }}>
             <input type="checkbox" checked={form.open_to_refi} onChange={e=>setField("open_to_refi",e.target.checked)} /> Open to refinancing if it saves meaningful money
           </label>
-          <Field label="Any debt you especially want gone first?" name="emotional_priority" placeholder='e.g. "my Discover card"' hint="Optional — we'll factor in emotional priorities" />
-          <Field label="Big upcoming expenses in the next 1–2 years?" name="upcoming_expenses" placeholder="Wedding, renovation, new baby…" hint="Optional" />
-          <NextBtn sectionId="goals" disabled={!form.monthly_committed} />
+          <Field form={form} setField={setField} label="Any debt you especially want gone first?" name="emotional_priority" placeholder='e.g. "my Discover card"' hint="Optional — we'll factor in emotional priorities" />
+          <Field form={form} setField={setField} label="Big upcoming expenses in the next 1–2 years?" name="upcoming_expenses" placeholder="Wedding, renovation, new baby…" hint="Optional" />
+          <NextBtn markComplete={markComplete} sectionId="goals" disabled={!form.monthly_committed} />
         </>
       ),
     };
