@@ -46,10 +46,13 @@ ${JSON.stringify(data, null, 2)}
 
 Your job:
 1. Give a genuinely warm 1-sentence acknowledgment using their name
-2. Recap their complete income picture clearly — list each source with amount, show total monthly take-home
-3. If bonus or stock grants are present, note how those windfalls will be factored in
-4. Ask ONE clarifying question ONLY if something seems genuinely off (e.g. take-home seems way off vs gross). Otherwise just ask "Does this look right, or anything to adjust?"
-5. Keep it conversational and warm — like a trusted friend reviewing this with them, not a form processor.`,
+2. Recap their complete income picture — list each earner's take-home, total monthly take-home, any bonuses or stock as windfalls
+3. Flag data issues using strict math only:
+   - Monthly take-home CANNOT exceed gross_annual / 12 (that's impossible before taxes). If it does, flag it: "Your monthly take-home of $X seems higher than your gross salary allows — worth double-checking."
+   - Monthly take-home below 40% of gross_annual / 12 might indicate a very high tax rate — mention it gently only if extreme
+   - Do NOT flag things as "low" when they might just be reasonable. $4,500/month on $95k gross = 57% of gross/12 = totally normal.
+4. End with "Does this look right, or anything to adjust?"
+5. Warm and conversational throughout.`,
 
   expenses_regular: (data) => `You are Clearpath, a warm and encouraging debt payoff planning assistant. The user just filled out their monthly expenses.
 
@@ -230,24 +233,15 @@ function renderMd(text) {
 }
 
 // ── Review Panel ──────────────────────────────────────────────────────────────
-function ReviewPanel({ sectionId, review, onSendMessage, onConfirm, onEdit }) {
+function ReviewPanel({ review, onConfirm, onEdit }) {
   const endRef = useRef(null);
-  const [showInput, setShowInput] = useState(false);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [review.messages]);
-  useEffect(() => { if (review.status === "active") setShowInput(false); }, [review.status]);
 
   return (
     <div style={{ marginTop: 20, borderRadius: 12, border: "1px solid #1e3a34", overflow: "hidden" }}>
-      <div style={{ background: "#0d2420", padding: "10px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 14 }}>🤖</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "#22a89a" }}>Clearpath Review</span>
-        </div>
-        {review.status === "confirmed" && (
-          <button onClick={onEdit} style={{ background: "none", border: "1px solid #334155", borderRadius: 6, color: "#8cb8b4", fontSize: 11, padding: "4px 10px", cursor: "pointer" }}>
-            Edit section
-          </button>
-        )}
+      <div style={{ background: "#0d2420", padding: "10px 16px", display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 14 }}>🤖</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: "#22a89a" }}>Clearpath Review</span>
       </div>
 
       <div style={{ background: "#0a1f1c", padding: 14, display: "flex", flexDirection: "column", gap: 10, maxHeight: 320, overflowY: "auto" }}>
@@ -276,39 +270,16 @@ function ReviewPanel({ sectionId, review, onSendMessage, onConfirm, onEdit }) {
         <div ref={endRef} />
       </div>
 
-      {review.status !== "confirmed" && (
-        <div style={{ padding: 10, borderTop: "1px solid #1e3a34", background: "#0d2420" }}>
-          {review.status === "ready_to_confirm" && !showInput ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <button onClick={onConfirm} style={{ background: "linear-gradient(135deg,#1A7A6E,#22a89a)", border: "none", borderRadius: 7, color: "white", fontSize: 13, fontWeight: 600, padding: "11px 12px", cursor: "pointer" }}>
-                ✅ Looks right, continue →
-              </button>
-              <button onClick={() => setShowInput(true)} style={{ background: "#0f3330", border: "1px solid #1e3a34", borderRadius: 7, color: "#8cb8b4", fontSize: 12, padding: "8px 12px", cursor: "pointer" }}>
-                ✏️ I need to correct something
-              </button>
-            </div>
-          ) : !review.loading && (
-            <ReviewInput onSend={(msg) => { setShowInput(false); onSendMessage(msg); }} loading={review.loading} placeholder="Type your correction…" />
-          )}
+      {review.status !== "confirmed" && !review.loading && (
+        <div style={{ padding: 10, borderTop: "1px solid #1e3a34", background: "#0d2420", display: "flex", flexDirection: "column", gap: 8 }}>
+          <button onClick={onConfirm} style={{ background: "linear-gradient(135deg,#1A7A6E,#22a89a)", border: "none", borderRadius: 7, color: "white", fontSize: 13, fontWeight: 600, padding: "11px 12px", cursor: "pointer" }}>
+            ✅ Looks right, continue →
+          </button>
+          <button onClick={onEdit} style={{ background: "#0f3330", border: "1px solid #1e3a34", borderRadius: 7, color: "#8cb8b4", fontSize: 12, padding: "8px 12px", cursor: "pointer" }}>
+            ✏️ Go back and correct my answers
+          </button>
         </div>
       )}
-    </div>
-  );
-}
-
-function ReviewInput({ onSend, loading, placeholder = "Reply to Clearpath…" }) {
-  const [val, setVal] = useState("");
-  const send = () => { if (val.trim() && !loading) { onSend(val); setVal(""); } };
-  return (
-    <div style={{ display: "flex", gap: 7 }}>
-      <input
-        value={val} onChange={e => setVal(e.target.value)}
-        onKeyDown={e => e.key === "Enter" && !e.shiftKey && send()}
-        placeholder={placeholder}
-        autoFocus
-        style={{ flex: 1, background: "#0f1f1c", border: "1px solid #334155", borderRadius: 7, color: "#e8f0ee", fontSize: 12, padding: "8px 10px", outline: "none" }}
-      />
-      <button onClick={send} disabled={loading || !val.trim()} style={{ background: "linear-gradient(135deg,#1A7A6E,#22a89a)", border: "none", borderRadius: 7, padding: "8px 12px", cursor: loading || !val.trim() ? "not-allowed" : "pointer", color: "white", fontSize: 13 }}>→</button>
     </div>
   );
 }
@@ -510,31 +481,6 @@ export default function App() {
       setReviews(r => ({
         ...r,
         [sectionId]: { status: "ready_to_confirm", messages: [{ role: "assistant", content: reply }], loading: false, error: null },
-      }));
-    } catch (err) {
-      setReviews(r => ({
-        ...r,
-        [sectionId]: { ...r[sectionId], loading: false, error: err.message },
-      }));
-    }
-  }
-
-  async function sendReviewMessage(sectionId, text, promptFn, data) {
-    const prev = reviews[sectionId].messages;
-    const newMessages = [...prev, { role: "user", content: text }];
-    setReviews(r => ({
-      ...r,
-      [sectionId]: { ...r[sectionId], status: "active", messages: newMessages, loading: true, error: null },
-    }));
-    try {
-      const reply = await callClaude(promptFn(data), newMessages);
-      setReviews(r => ({
-        ...r,
-        [sectionId]: {
-          status: "ready_to_confirm",
-          messages: [...newMessages, { role: "assistant", content: reply }],
-          loading: false, error: null,
-        },
       }));
     } catch (err) {
       setReviews(r => ({
@@ -912,8 +858,8 @@ export default function App() {
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                      <label style={lS}>Name / Label</label>
-                      <input value={earner.label} onChange={e => { const ea = [...form.earners]; ea[i] = { ...ea[i], label: e.target.value }; setForm(f => ({ ...f, earners: ea })); }} placeholder={i === 0 ? "e.g. Me" : "e.g. Spouse"} style={iS} />
+                      <label style={lS}>Your Name {i === 0 && <span style={{ color: "#f87171" }}>*</span>}</label>
+                      <input value={earner.label} onChange={e => { const ea = [...form.earners]; ea[i] = { ...ea[i], label: e.target.value }; setForm(f => ({ ...f, earners: ea })); }} placeholder={i === 0 ? "e.g. Scott" : "e.g. Sarah"} style={{ ...iS, border: i === 0 && !earner.label ? "1px solid #f87171" : "1px solid #1e3a34" }} />
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                       <label style={lS}>Gross Annual Base Salary</label>
@@ -1010,15 +956,17 @@ export default function App() {
               <button onClick={addExtraIncome} style={{ ...btnS, fontSize: 12 }}>+ Add income source</button>
             </div>
 
-            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
+            <div style={{ marginTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <button onClick={() => { setStep(0); setReviews(r => ({ ...r, income: { status: "idle", messages: [], loading: false, error: null } })); }} style={{ ...btnS, fontSize: 12 }}>← Back</button>
               <button onClick={() => {
+                if (!form.earners[0]?.label?.trim()) { alert("Please enter your name."); return; }
+                if (!form.earners[0]?.takehome) { alert("Please enter your monthly take-home pay."); return; }
                 const data = { name: form.name, earners: form.earners, bonuses: form.bonuses, other_income: form.other_income, extra_income: form.extra_income, stock_grants: form.stock_grants };
                 startReview("income", REVIEW_PROMPTS.income, data);
               }} style={btnP}>Review with Clearpath →</button>
             </div>
             {reviews.income.status !== "idle" && (
-              <ReviewPanel sectionId="income" review={reviews.income}
-                onSendMessage={(msg) => sendReviewMessage("income", msg, REVIEW_PROMPTS.income, { name: form.name, earners: form.earners, bonuses: form.bonuses, other_income: form.other_income, extra_income: form.extra_income, stock_grants: form.stock_grants })}
+              <ReviewPanel review={reviews.income}
                 onConfirm={() => confirmReview("income")}
                 onEdit={() => editSection("income", 1)} />
             )}
@@ -1054,7 +1002,8 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
+            <div style={{ marginTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <button onClick={() => { setStep(1); setReviews(r => ({ ...r, expenses_regular: { status: "idle", messages: [], loading: false, error: null } })); }} style={{ ...btnS, fontSize: 12 }}>← Back</button>
               <button onClick={() => {
                 const expData = {};
                 ["rent","mortgage","property_tax","hoa","renters_insurance","electric_gas","water","internet","streaming_video","streaming_music","other_subscriptions","cell_phone","car_payment","car_insurance_monthly","gas","parking_tolls","groceries","dining_out","health_insurance","life_insurance","dental_vision","medical_copays","childcare","child_support_paid","pets","personal_care","gym","savings_transfers","misc_buffer","other_monthly"].forEach(k => { if (form[k]) expData[k] = form[k]; });
@@ -1062,8 +1011,7 @@ export default function App() {
               }} style={btnP}>Review with Clearpath →</button>
             </div>
             {reviews.expenses_regular.status !== "idle" && (
-              <ReviewPanel sectionId="expenses_regular" review={reviews.expenses_regular}
-                onSendMessage={(msg) => { const d = {}; ["rent","mortgage","property_tax","hoa","renters_insurance","electric_gas","water","internet","streaming_video","streaming_music","other_subscriptions","cell_phone","car_payment","car_insurance_monthly","gas","parking_tolls","groceries","dining_out","health_insurance","life_insurance","dental_vision","medical_copays","childcare","child_support_paid","pets","personal_care","gym","savings_transfers","misc_buffer","other_monthly"].forEach(k => { if (form[k]) d[k] = form[k]; }); sendReviewMessage("expenses_regular", msg, REVIEW_PROMPTS.expenses_regular, d); }}
+              <ReviewPanel review={reviews.expenses_regular}
                 onConfirm={() => confirmReview("expenses_regular")}
                 onEdit={() => editSection("expenses_regular", 2)} />
             )}
@@ -1130,12 +1078,12 @@ export default function App() {
               ))}
               <button onClick={addIrregularExpense} style={{ ...btnP, fontSize: 12, marginTop: 4 }}>+ Add expense</button>
             </div>
-            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
+            <div style={{ marginTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <button onClick={() => { setStep(2); setReviews(r => ({ ...r, expenses_irregular: { status: "idle", messages: [], loading: false, error: null } })); }} style={{ ...btnS, fontSize: 12 }}>← Back</button>
               <button onClick={() => startReview("expenses_irregular", REVIEW_PROMPTS.expenses_irregular, { irregular_expenses: form.irregular_expenses })} style={btnP}>Review with Clearpath →</button>
             </div>
             {reviews.expenses_irregular.status !== "idle" && (
-              <ReviewPanel sectionId="expenses_irregular" review={reviews.expenses_irregular}
-                onSendMessage={(msg) => sendReviewMessage("expenses_irregular", msg, REVIEW_PROMPTS.expenses_irregular, { irregular_expenses: form.irregular_expenses })}
+              <ReviewPanel review={reviews.expenses_irregular}
                 onConfirm={() => confirmReview("expenses_irregular")}
                 onEdit={() => editSection("expenses_irregular", 3)} />
             )}
@@ -1220,12 +1168,15 @@ export default function App() {
                 </div>
               )}
             </div>
-            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
-              <button onClick={() => startReview("debts", REVIEW_PROMPTS.debts, { debts: form.debts })} style={btnP}>Review with Clearpath →</button>
+            <div style={{ marginTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <button onClick={() => { setStep(3); setReviews(r => ({ ...r, debts: { status: "idle", messages: [], loading: false, error: null } })); }} style={{ ...btnS, fontSize: 12 }}>← Back</button>
+              <button onClick={() => {
+                if (!form.debts.length) { alert("Please add at least one debt."); return; }
+                startReview("debts", REVIEW_PROMPTS.debts, { debts: form.debts });
+              }} style={btnP}>Review with Clearpath →</button>
             </div>
             {reviews.debts.status !== "idle" && (
-              <ReviewPanel sectionId="debts" review={reviews.debts}
-                onSendMessage={(msg) => sendReviewMessage("debts", msg, REVIEW_PROMPTS.debts, { debts: form.debts })}
+              <ReviewPanel review={reviews.debts}
                 onConfirm={() => confirmReview("debts")}
                 onEdit={() => editSection("debts", 4)} />
             )}
@@ -1303,12 +1254,15 @@ export default function App() {
               })()}
             </div>
 
-            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
-              <button onClick={() => startReview("goals", REVIEW_PROMPTS.goals, buildPayload())} style={btnP}>Review with Clearpath →</button>
+            <div style={{ marginTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <button onClick={() => { setStep(4); setReviews(r => ({ ...r, goals: { status: "idle", messages: [], loading: false, error: null } })); }} style={{ ...btnS, fontSize: 12 }}>← Back</button>
+              <button onClick={() => {
+                if (!form.monthly_committed) { alert("Please enter your monthly commitment amount."); return; }
+                startReview("goals", REVIEW_PROMPTS.goals, buildPayload());
+              }} style={btnP}>Review with Clearpath →</button>
             </div>
             {reviews.goals.status !== "idle" && (
-              <ReviewPanel sectionId="goals" review={reviews.goals}
-                onSendMessage={(msg) => sendReviewMessage("goals", msg, REVIEW_PROMPTS.goals, buildPayload())}
+              <ReviewPanel review={reviews.goals}
                 onConfirm={generatePlan}
                 onEdit={() => editSection("goals", 5)} />
             )}
