@@ -1,13 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-// Spinner animation
-if (typeof document !== "undefined" && !document.getElementById("cp-spin-style")) {
-  const s = document.createElement("style");
-  s.id = "cp-spin-style";
-  s.textContent = "@keyframes spin { to { transform: rotate(360deg); } }";
-  document.head.appendChild(s);
-}
-
 // ── Supabase helpers ──────────────────────────────────────────────────────────
 const SUPABASE_URL = (typeof import.meta !== "undefined" && import.meta.env?.VITE_SUPABASE_URL) || "";
 const SUPABASE_KEY = (typeof import.meta !== "undefined" && import.meta.env?.VITE_SUPABASE_PUBLISHABLE_KEY) || "";
@@ -488,6 +480,7 @@ export default function App() {
     health_insurance: "", life_insurance: "", dental_vision: "", medical_copays: "",
     childcare: "", child_support_paid: "", pets: "", personal_care: "", gym: "",
     savings_transfers: "", misc_buffer: "", other_monthly: "",
+    custom_monthly_expenses: [],
     irregular_expenses: [],
     extra_annual: [],
     debts: [],
@@ -626,7 +619,12 @@ export default function App() {
       ["Savings Transfers", f.savings_transfers], ["Misc Buffer", f.misc_buffer],
       ["Other Monthly", f.other_monthly],
     ].map(([name, v]) => ({ name, amount: parseFloat(v) || 0 }))
-      .filter(e => e.amount > 0);
+      .filter(e => e.amount > 0)
+      .concat(
+        (f.custom_monthly_expenses || [])
+          .filter(e => e.name && parseFloat(e.amount) > 0)
+          .map(e => ({ name: e.name, amount: parseFloat(e.amount), category: e.category }))
+      );
 
     const irregularExp = f.irregular_expenses
       .filter(e => e.name)
@@ -748,6 +746,10 @@ export default function App() {
   function updateIrregularEntry(i, j, k, v) { setForm(f => { const ie = [...f.irregular_expenses]; const entries = [...ie[i].entries]; entries[j] = { ...entries[j], [k]: v }; ie[i] = { ...ie[i], entries }; return { ...f, irregular_expenses: ie }; }); }
   function removeIrregularEntry(i, j) { setForm(f => { const ie = [...f.irregular_expenses]; ie[i] = { ...ie[i], entries: ie[i].entries.filter((_, idx) => idx !== j) }; return { ...f, irregular_expenses: ie }; }); }
 
+  function addCustomMonthly(category) { setForm(f => ({ ...f, custom_monthly_expenses: [...f.custom_monthly_expenses, { category, name: "", amount: "" }] })); }
+  function updateCustomMonthly(i, k, v) { setForm(f => { const c = [...f.custom_monthly_expenses]; c[i] = { ...c[i], [k]: v }; return { ...f, custom_monthly_expenses: c }; }); }
+  function removeCustomMonthly(i) { setForm(f => ({ ...f, custom_monthly_expenses: f.custom_monthly_expenses.filter((_, idx) => idx !== i) })); }
+
   // ── Shared styles ─────────────────────────────────────────────────────────────
   const iS = { background: "#0d2420", border: "1px solid #1e3a34", borderRadius: 8, color: "#e8f5f3", fontSize: 13, padding: "9px 12px", outline: "none", width: "100%", boxSizing: "border-box" };
   const lS = { fontSize: 12, color: "#c9e8e5", fontWeight: 600 };
@@ -768,7 +770,7 @@ export default function App() {
 
   const STEPS = ["Welcome", "Income", "Monthly Expenses", "Annual Expenses", "Debts", "Goals"];
 
-  // Scroll to top whenever plan screen loads — must be before any conditional returns
+  // Must be before any conditional returns — Rules of Hooks
   useEffect(() => {
     if (screen === "plan") window.scrollTo({ top: 0, behavior: "instant" });
   }, [screen]);
@@ -817,7 +819,6 @@ export default function App() {
 
   async function downloadExcel() {
     const payload = buildPayload();
-    // Dynamically load SheetJS from CDN
     if (!window.XLSX) {
       await new Promise((resolve, reject) => {
         const s = document.createElement("script");
@@ -829,7 +830,6 @@ export default function App() {
     const XLSX = window.XLSX;
     const wb = XLSX.utils.book_new();
 
-    // ── Sheet 1: Summary ────────────────────────────────────────────────────────
     const summaryRows = [
       ["CLEARPATH DEBT PAYOFF PLAN", "", ""],
       [`Generated: ${payload.today}`, "", ""],
@@ -847,47 +847,40 @@ export default function App() {
       ["Total debt", `$${payload.total_debt.toLocaleString()}`, ""],
       ["Total minimums", `$${payload.total_minimums.toLocaleString()}/mo`, ""],
       ["", "", ""],
-      ["PLAN", "", ""],
+      ["PLAN SETTINGS", "", ""],
       ["Monthly committed", `$${payload.monthly_committed.toLocaleString()}`, ""],
       ["Extra above minimums", `$${payload.extra_monthly.toLocaleString()}`, ""],
       ["Priority", payload.goals.priority, ""],
-      ["Open to refinancing", payload.goals.open_to_refi ? "Yes" : "No", ""],
     ];
     const ws1 = XLSX.utils.aoa_to_sheet(summaryRows);
     ws1["!cols"] = [{ wch: 36 }, { wch: 20 }, { wch: 24 }];
     XLSX.utils.book_append_sheet(wb, ws1, "Summary");
 
-    // ── Sheet 2: Plan (Claude's full text, line by line) ─────────────────────
     const planRows = planText.split("\n").map(line => [line]);
     const ws2 = XLSX.utils.aoa_to_sheet(planRows);
     ws2["!cols"] = [{ wch: 100 }];
     XLSX.utils.book_append_sheet(wb, ws2, "Your Plan");
 
-    // ── Sheet 3: Debt tracker ────────────────────────────────────────────────
-    const trackerHeader = ["Month", ...payload.debts.map(d => d.name + " Balance"), "Total Remaining", "Notes"];
+    const trackerHeader = ["Month", ...payload.debts.map(d => d.name), "Total Remaining"];
     const trackerRows = [trackerHeader];
-    // Build a simple amortization for the chosen strategy
     let balances = payload.debts.map(d => d.balance);
     const rates = payload.debts.map(d => d.rate);
     const mins = payload.debts.map(d => d.min);
-    let extra = payload.extra_monthly;
+    const extra = payload.extra_monthly;
     const today = new Date();
     for (let m = 0; m < 60; m++) {
       const date = new Date(today.getFullYear(), today.getMonth() + m, 1);
       const label = date.toLocaleDateString("en-US", { month: "short", year: "numeric" });
-      // Accrue interest
       balances = balances.map((b, i) => Math.max(0, b + b * rates[i] / 12));
-      // Apply minimums
       balances = balances.map((b, i) => Math.max(0, b - mins[i]));
-      // Apply extra to first non-zero debt
       let rem = extra;
       balances = balances.map(b => { if (rem > 0 && b > 0) { const pay = Math.min(rem, b); rem -= pay; return b - pay; } return b; });
       const total = balances.reduce((a, b) => a + b, 0);
-      trackerRows.push([label, ...balances.map(b => b > 0.5 ? Math.round(b) : "PAID OFF"), Math.round(total), ""]);
+      trackerRows.push([label, ...balances.map(b => b > 0.5 ? Math.round(b) : "PAID OFF"), Math.round(total)]);
       if (total < 1) break;
     }
     const ws3 = XLSX.utils.aoa_to_sheet(trackerRows);
-    ws3["!cols"] = [{ wch: 14 }, ...payload.debts.map(() => ({ wch: 18 })), { wch: 18 }, { wch: 30 }];
+    ws3["!cols"] = [{ wch: 14 }, ...payload.debts.map(() => ({ wch: 18 })), { wch: 18 }];
     XLSX.utils.book_append_sheet(wb, ws3, "60-Month Tracker");
 
     XLSX.writeFile(wb, `Clearpath_Plan_${payload.name}_${new Date().getFullYear()}.xlsx`);
@@ -897,7 +890,7 @@ export default function App() {
     const payload = buildPayload();
     return (
       <div style={{ minHeight: "100vh", background: "#07120f", fontFamily: "'Inter', sans-serif" }}>
-      <div style={{ background: "#0d2420", borderBottom: "1px solid #1e3a34", padding: "14px 24px", display: "flex", alignItems: "center", gap: 12, position: "sticky", top: 0, zIndex: 10 }}>
+        <div style={{ background: "#0d2420", borderBottom: "1px solid #1e3a34", padding: "14px 24px", display: "flex", alignItems: "center", gap: 12, position: "sticky", top: 0, zIndex: 10 }}>
           <span style={{ fontSize: 18 }}>🧭</span>
           <span style={{ fontSize: 16, fontWeight: 800, color: "#e8f5f3" }}>Clearpath</span>
           <span style={{ fontSize: 12, color: "#8cb8b4", marginLeft: 8 }}>
@@ -907,7 +900,7 @@ export default function App() {
             {" · "}
             <span style={{ color: "#22a89a", fontWeight: 600 }}>${(parseFloat(form.monthly_committed) || 0).toLocaleString()}/mo</span>
           </span>
-          <button onClick={downloadExcel} style={{ marginLeft: "auto", background: "linear-gradient(135deg,#1A7A6E,#22a89a)", border: "none", borderRadius: 8, color: "white", fontSize: 13, fontWeight: 700, padding: "9px 18px", cursor: "pointer", display: "flex", alignItems: "center", gap: 7 }}>
+          <button onClick={downloadExcel} style={{ marginLeft: "auto", background: "linear-gradient(135deg,#1A7A6E,#22a89a)", border: "none", borderRadius: 8, color: "white", fontSize: 13, fontWeight: 700, padding: "9px 18px", cursor: "pointer" }}>
             ⬇️ Download Excel Plan
           </button>
         </div>
@@ -1113,37 +1106,284 @@ export default function App() {
         {/* ── STEP 2: Monthly Expenses ── */}
         {step === 2 && (
           <div>
-            {sectionHead("Monthly Expenses", "Monthly recurring costs only — things that hit every single month.")}
+            {sectionHead("Monthly Expenses", "Monthly recurring costs only — things that hit every single month for roughly the same amount.")}
+            <div style={{ background: "#0a1f1c", border: "1px solid #22a89a", borderRadius: 10, padding: "12px 16px", marginBottom: 18 }}>
+              <p style={{ color: "#c9e8e5", fontSize: 13, margin: 0, lineHeight: 1.7 }}>
+                <strong style={{ color: "#22a89a" }}>⚠️ Monthly costs only.</strong> If something doesn't hit every month — car insurance paid every 6 months, annual subscriptions, holiday spending, property taxes paid in lump sums — <strong>skip it here</strong>. You'll have a dedicated section for all of those right after this one. When in doubt, skip it for now.
+              </p>
+            </div>
             <div style={{ background: "#0d2420", borderRadius: 12, border: "1px solid #1e3a34", padding: 24 }}>
-              {[
-                { head: "Housing", fields: [["Rent", "rent"], ["Mortgage", "mortgage"], ["Property Tax (direct)", "property_tax"], ["HOA Fees", "hoa"], ["Renters Insurance", "renters_insurance"]] },
-                { head: "Utilities", fields: [["Electric / Gas", "electric_gas"], ["Water / Sewer", "water"], ["Internet", "internet"]] },
-                { head: "Streaming & Subscriptions", fields: [["Streaming Video (all)", "streaming_video"], ["Streaming Music", "streaming_music"], ["Other Monthly Subscriptions", "other_subscriptions"]] },
-                { head: "Phone", fields: [["Cell Phone Bill", "cell_phone"]] },
-                { head: "Transportation", fields: [["Car Payment", "car_payment"], ["Car Insurance (monthly only)", "car_insurance_monthly"], ["Gas", "gas"], ["Parking / Tolls / Transit", "parking_tolls"]] },
-                { head: "Food", fields: [["Groceries", "groceries"], ["Dining Out & Takeout", "dining_out"]] },
-                { head: "Insurance & Health", fields: [["Health Insurance (out-of-pocket)", "health_insurance"], ["Life Insurance (monthly)", "life_insurance"], ["Dental / Vision", "dental_vision"], ["Medical Copays (avg)", "medical_copays"]] },
-                { head: "Family & Personal", fields: [["Childcare / Daycare", "childcare"], ["Child Support / Alimony Paid", "child_support_paid"], ["Pets", "pets"], ["Personal Care", "personal_care"], ["Gym / Fitness", "gym"]] },
-                { head: "Savings & Other", fields: [["Savings / Investment Transfers", "savings_transfers"], ["Misc Buffer", "misc_buffer"], ["Other Monthly", "other_monthly"]] },
-              ].map(({ head, fields }) => (
-                <div key={head}>
-                  {groupHead(head)}
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                    {fields.map(([label, key]) => (
-                      <div key={key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                        <label style={lS}>{label}</label>
-                        <input type="number" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder="$0" style={iS} />
-                      </div>
-                    ))}
+
+              {/* HOUSING */}
+              {groupHead("Housing")}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {[["Rent", "rent"], ["Mortgage Payment", "mortgage"]].map(([label, key]) => (
+                  <div key={key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <label style={lS}>{label}</label>
+                    <input type="number" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder="$0" style={iS} />
                   </div>
+                ))}
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <label style={lS}>Property Tax (paid directly)</label>
+                  <span style={{ fontSize: 11, color: "#8cb8b4", marginTop: -2 }}>Real estate taxes paid outside your mortgage — skip if already included in your mortgage payment</span>
+                  <input type="number" value={form.property_tax} onChange={e => setForm(f => ({ ...f, property_tax: e.target.value }))} placeholder="$0" style={iS} />
                 </div>
-              ))}
+                {[["HOA Fees", "hoa"], ["Renters Insurance", "renters_insurance"]].map(([label, key]) => (
+                  <div key={key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <label style={lS}>{label}</label>
+                    <input type="number" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder="$0" style={iS} />
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 12 }}>
+                {(form.custom_monthly_expenses || []).filter(e => e.category === "Housing").map((e, ci) => {
+                  const gi = form.custom_monthly_expenses.indexOf(e);
+                  return (
+                    <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 140px 28px", gap: 8, marginBottom: 8 }}>
+                      <input value={e.name} onChange={ev => updateCustomMonthly(gi, "name", ev.target.value)} placeholder="Item name" style={iS} />
+                      <input type="number" value={e.amount} onChange={ev => updateCustomMonthly(gi, "amount", ev.target.value)} placeholder="$/mo" style={iS} />
+                      <button onClick={() => removeCustomMonthly(gi)} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 18 }}>×</button>
+                    </div>
+                  );
+                })}
+                <button onClick={() => addCustomMonthly("Housing")} style={{ ...btnS, fontSize: 11, padding: "4px 10px", marginTop: 4 }}>+ Add housing item</button>
+              </div>
+
+              {/* UTILITIES */}
+              {groupHead("Utilities")}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {[["Electric / Gas", "electric_gas"], ["Water / Sewer", "water"], ["Internet", "internet"]].map(([label, key]) => (
+                  <div key={key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <label style={lS}>{label}</label>
+                    <input type="number" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder="$0" style={iS} />
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 12 }}>
+                {(form.custom_monthly_expenses || []).filter(e => e.category === "Utilities").map((e, ci) => {
+                  const gi = form.custom_monthly_expenses.indexOf(e);
+                  return (
+                    <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 140px 28px", gap: 8, marginBottom: 8 }}>
+                      <input value={e.name} onChange={ev => updateCustomMonthly(gi, "name", ev.target.value)} placeholder="Item name" style={iS} />
+                      <input type="number" value={e.amount} onChange={ev => updateCustomMonthly(gi, "amount", ev.target.value)} placeholder="$/mo" style={iS} />
+                      <button onClick={() => removeCustomMonthly(gi)} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 18 }}>×</button>
+                    </div>
+                  );
+                })}
+                <button onClick={() => addCustomMonthly("Utilities")} style={{ ...btnS, fontSize: 11, padding: "4px 10px", marginTop: 4 }}>+ Add utility</button>
+              </div>
+
+              {/* STREAMING & SUBSCRIPTIONS */}
+              {groupHead("Streaming & Subscriptions")}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <label style={lS}>Streaming Video</label>
+                  <span style={{ fontSize: 11, color: "#8cb8b4", marginTop: -2 }}>Netflix, Amazon Video, HBO Max, Disney+, YouTube TV, Hulu, Peacock, etc. — enter your combined total</span>
+                  <input type="number" value={form.streaming_video} onChange={e => setForm(f => ({ ...f, streaming_video: e.target.value }))} placeholder="$0" style={iS} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <label style={lS}>Streaming Music</label>
+                  <span style={{ fontSize: 11, color: "#8cb8b4", marginTop: -2 }}>Spotify, Apple Music, Amazon Music, SiriusXM, Pandora, Tidal, etc. — combined total</span>
+                  <input type="number" value={form.streaming_music} onChange={e => setForm(f => ({ ...f, streaming_music: e.target.value }))} placeholder="$0" style={iS} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <label style={lS}>Other Monthly Subscriptions</label>
+                  <span style={{ fontSize: 11, color: "#8cb8b4", marginTop: -2 }}>Gaming, news, apps, software — anything paid every month</span>
+                  <input type="number" value={form.other_subscriptions} onChange={e => setForm(f => ({ ...f, other_subscriptions: e.target.value }))} placeholder="$0" style={iS} />
+                </div>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                {(form.custom_monthly_expenses || []).filter(e => e.category === "Streaming & Subscriptions").map((e, ci) => {
+                  const gi = form.custom_monthly_expenses.indexOf(e);
+                  return (
+                    <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 140px 28px", gap: 8, marginBottom: 8 }}>
+                      <input value={e.name} onChange={ev => updateCustomMonthly(gi, "name", ev.target.value)} placeholder="Service name" style={iS} />
+                      <input type="number" value={e.amount} onChange={ev => updateCustomMonthly(gi, "amount", ev.target.value)} placeholder="$/mo" style={iS} />
+                      <button onClick={() => removeCustomMonthly(gi)} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 18 }}>×</button>
+                    </div>
+                  );
+                })}
+                <button onClick={() => addCustomMonthly("Streaming & Subscriptions")} style={{ ...btnS, fontSize: 11, padding: "4px 10px", marginTop: 4 }}>+ Add subscription</button>
+              </div>
+
+              {/* PHONE */}
+              {groupHead("Phone")}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <label style={lS}>Cell Phone Bill</label>
+                  <input type="number" value={form.cell_phone} onChange={e => setForm(f => ({ ...f, cell_phone: e.target.value }))} placeholder="$0" style={iS} />
+                </div>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                {(form.custom_monthly_expenses || []).filter(e => e.category === "Phone").map((e, ci) => {
+                  const gi = form.custom_monthly_expenses.indexOf(e);
+                  return (
+                    <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 140px 28px", gap: 8, marginBottom: 8 }}>
+                      <input value={e.name} onChange={ev => updateCustomMonthly(gi, "name", ev.target.value)} placeholder="Item name" style={iS} />
+                      <input type="number" value={e.amount} onChange={ev => updateCustomMonthly(gi, "amount", ev.target.value)} placeholder="$/mo" style={iS} />
+                      <button onClick={() => removeCustomMonthly(gi)} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 18 }}>×</button>
+                    </div>
+                  );
+                })}
+                <button onClick={() => addCustomMonthly("Phone")} style={{ ...btnS, fontSize: 11, padding: "4px 10px", marginTop: 4 }}>+ Add phone item</button>
+              </div>
+
+              {/* TRANSPORTATION */}
+              {groupHead("Transportation")}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <label style={lS}>Car Payments</label>
+                  <span style={{ fontSize: 11, color: "#8cb8b4", marginTop: -2 }}>Total of all monthly car loan or lease payments</span>
+                  <input type="number" value={form.car_payment} onChange={e => setForm(f => ({ ...f, car_payment: e.target.value }))} placeholder="$0" style={iS} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <label style={lS}>Car Insurances (monthly billing only)</label>
+                  <span style={{ fontSize: 11, color: "#8cb8b4", marginTop: -2 }}>Only if you pay monthly — skip and enter in Annual Expenses if you pay every 6 or 12 months</span>
+                  <input type="number" value={form.car_insurance_monthly} onChange={e => setForm(f => ({ ...f, car_insurance_monthly: e.target.value }))} placeholder="$0" style={iS} />
+                </div>
+                {[["Gas", "gas"], ["Parking / Tolls / Transit", "parking_tolls"]].map(([label, key]) => (
+                  <div key={key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <label style={lS}>{label}</label>
+                    <input type="number" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder="$0" style={iS} />
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 12 }}>
+                {(form.custom_monthly_expenses || []).filter(e => e.category === "Transportation").map((e, ci) => {
+                  const gi = form.custom_monthly_expenses.indexOf(e);
+                  return (
+                    <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 140px 28px", gap: 8, marginBottom: 8 }}>
+                      <input value={e.name} onChange={ev => updateCustomMonthly(gi, "name", ev.target.value)} placeholder="Item name" style={iS} />
+                      <input type="number" value={e.amount} onChange={ev => updateCustomMonthly(gi, "amount", ev.target.value)} placeholder="$/mo" style={iS} />
+                      <button onClick={() => removeCustomMonthly(gi)} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 18 }}>×</button>
+                    </div>
+                  );
+                })}
+                <button onClick={() => addCustomMonthly("Transportation")} style={{ ...btnS, fontSize: 11, padding: "4px 10px", marginTop: 4 }}>+ Add transportation item</button>
+              </div>
+
+              {/* FOOD */}
+              {groupHead("Food")}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {[["Groceries", "groceries"], ["Dining Out & Takeout", "dining_out"]].map(([label, key]) => (
+                  <div key={key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <label style={lS}>{label}</label>
+                    <input type="number" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder="$0" style={iS} />
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 12 }}>
+                {(form.custom_monthly_expenses || []).filter(e => e.category === "Food").map((e, ci) => {
+                  const gi = form.custom_monthly_expenses.indexOf(e);
+                  return (
+                    <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 140px 28px", gap: 8, marginBottom: 8 }}>
+                      <input value={e.name} onChange={ev => updateCustomMonthly(gi, "name", ev.target.value)} placeholder="Item name" style={iS} />
+                      <input type="number" value={e.amount} onChange={ev => updateCustomMonthly(gi, "amount", ev.target.value)} placeholder="$/mo" style={iS} />
+                      <button onClick={() => removeCustomMonthly(gi)} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 18 }}>×</button>
+                    </div>
+                  );
+                })}
+                <button onClick={() => addCustomMonthly("Food")} style={{ ...btnS, fontSize: 11, padding: "4px 10px", marginTop: 4 }}>+ Add food item</button>
+              </div>
+
+              {/* INSURANCE & HEALTH */}
+              {groupHead("Insurance & Health")}
+              <div style={{ background: "#061410", border: "1px solid #1e3a34", borderRadius: 8, padding: "10px 14px", marginBottom: 14 }}>
+                <p style={{ color: "#8cb8b4", fontSize: 12, margin: 0, lineHeight: 1.6 }}>
+                  <strong style={{ color: "#c9e8e5" }}>Only include costs that come out of your bank account.</strong> If premiums are deducted pre-tax from your paycheck, skip those — they're already out of your take-home pay.
+                </p>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {[["Health Insurance (out-of-pocket)", "health_insurance"], ["Life Insurance (monthly)", "life_insurance"], ["Dental / Vision", "dental_vision"], ["Medical Copays (avg/mo)", "medical_copays"]].map(([label, key]) => (
+                  <div key={key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <label style={lS}>{label}</label>
+                    <input type="number" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder="$0" style={iS} />
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 12 }}>
+                {(form.custom_monthly_expenses || []).filter(e => e.category === "Insurance & Health").map((e, ci) => {
+                  const gi = form.custom_monthly_expenses.indexOf(e);
+                  return (
+                    <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 140px 28px", gap: 8, marginBottom: 8 }}>
+                      <input value={e.name} onChange={ev => updateCustomMonthly(gi, "name", ev.target.value)} placeholder="Item name" style={iS} />
+                      <input type="number" value={e.amount} onChange={ev => updateCustomMonthly(gi, "amount", ev.target.value)} placeholder="$/mo" style={iS} />
+                      <button onClick={() => removeCustomMonthly(gi)} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 18 }}>×</button>
+                    </div>
+                  );
+                })}
+                <button onClick={() => addCustomMonthly("Insurance & Health")} style={{ ...btnS, fontSize: 11, padding: "4px 10px", marginTop: 4 }}>+ Add insurance/health item</button>
+              </div>
+
+              {/* FAMILY & PERSONAL */}
+              {groupHead("Family & Personal")}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {[["Childcare / Daycare", "childcare"], ["Child Support / Alimony Paid", "child_support_paid"], ["Pets", "pets"], ["Personal Care", "personal_care"], ["Gym / Fitness", "gym"]].map(([label, key]) => (
+                  <div key={key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <label style={lS}>{label}</label>
+                    <input type="number" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder="$0" style={iS} />
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 12 }}>
+                {(form.custom_monthly_expenses || []).filter(e => e.category === "Family & Personal").map((e, ci) => {
+                  const gi = form.custom_monthly_expenses.indexOf(e);
+                  return (
+                    <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 140px 28px", gap: 8, marginBottom: 8 }}>
+                      <input value={e.name} onChange={ev => updateCustomMonthly(gi, "name", ev.target.value)} placeholder="Item name" style={iS} />
+                      <input type="number" value={e.amount} onChange={ev => updateCustomMonthly(gi, "amount", ev.target.value)} placeholder="$/mo" style={iS} />
+                      <button onClick={() => removeCustomMonthly(gi)} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 18 }}>×</button>
+                    </div>
+                  );
+                })}
+                <button onClick={() => addCustomMonthly("Family & Personal")} style={{ ...btnS, fontSize: 11, padding: "4px 10px", marginTop: 4 }}>+ Add family/personal item</button>
+              </div>
+
+              {/* SAVINGS & OTHER */}
+              {groupHead("Savings & Other")}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {[["Savings / Investment Transfers", "savings_transfers"], ["Other Monthly", "other_monthly"]].map(([label, key]) => (
+                  <div key={key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <label style={lS}>{label}</label>
+                    <input type="number" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder="$0" style={iS} />
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 12 }}>
+                {(form.custom_monthly_expenses || []).filter(e => e.category === "Savings & Other").map((e, ci) => {
+                  const gi = form.custom_monthly_expenses.indexOf(e);
+                  return (
+                    <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 140px 28px", gap: 8, marginBottom: 8 }}>
+                      <input value={e.name} onChange={ev => updateCustomMonthly(gi, "name", ev.target.value)} placeholder="Item name" style={iS} />
+                      <input type="number" value={e.amount} onChange={ev => updateCustomMonthly(gi, "amount", ev.target.value)} placeholder="$/mo" style={iS} />
+                      <button onClick={() => removeCustomMonthly(gi)} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 18 }}>×</button>
+                    </div>
+                  );
+                })}
+                <button onClick={() => addCustomMonthly("Savings & Other")} style={{ ...btnS, fontSize: 11, padding: "4px 10px", marginTop: 4 }}>+ Add item</button>
+              </div>
+
+              {/* MONTHLY BUFFER */}
+              {groupHead("Monthly Buffer")}
+              <div style={{ background: "#061410", border: "1px solid #1e3a34", borderRadius: 8, padding: "10px 14px", marginBottom: 14 }}>
+                <p style={{ color: "#8cb8b4", fontSize: 12, margin: 0, lineHeight: 1.6 }}>
+                  How much do you want to keep in reserve each month for unknowns? Small car repairs, a random copay, something that just comes up. This isn't invested or saved — it's breathing room so the plan stays on track when life happens. Many people set aside $100–$300/month.
+                </p>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <label style={lS}>Monthly Buffer / Slush Fund</label>
+                  <input type="number" value={form.misc_buffer} onChange={e => setForm(f => ({ ...f, misc_buffer: e.target.value }))} placeholder="e.g. 150" style={iS} />
+                </div>
+              </div>
+
             </div>
             <div style={{ marginTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <button onClick={() => { setStep(1); setReviews(r => ({ ...r, expenses_regular: { status: "idle", messages: [], loading: false, error: null } })); }} style={{ ...btnS, fontSize: 12 }}>← Back</button>
               <button onClick={() => {
                 const expData = {};
                 ["rent","mortgage","property_tax","hoa","renters_insurance","electric_gas","water","internet","streaming_video","streaming_music","other_subscriptions","cell_phone","car_payment","car_insurance_monthly","gas","parking_tolls","groceries","dining_out","health_insurance","life_insurance","dental_vision","medical_copays","childcare","child_support_paid","pets","personal_care","gym","savings_transfers","misc_buffer","other_monthly"].forEach(k => { if (form[k]) expData[k] = form[k]; });
+                if (form.custom_monthly_expenses?.length) expData.custom_items = form.custom_monthly_expenses.filter(e => e.name && e.amount);
                 startReview("expenses_regular", REVIEW_PROMPTS.expenses_regular, expData);
               }} style={btnP}>Review with Clearpath →</button>
             </div>
@@ -1264,10 +1504,10 @@ export default function App() {
                       </div>
                       <input type="number" value={d.rate} onChange={e => updateDebt(i, "rate", e.target.value)} placeholder={d.rate_type === "variable" ? "Current rate, e.g. 8.5" : "e.g. 22.99"} style={iS} />
                       {d.rate_type === "variable" && !d.rate && (
-                        <span style={{ fontSize: 11, color: "#e8c87a" }}>Not sure? For a variable-rate student loan, ~7–8% is a typical current range. For a HELOC, ~8–9%. Enter your best guess — you can adjust later.</span>
+                        <span style={{ fontSize: 11, color: "#e8c87a" }}>Not sure? Variable student loans ~7–8%, HELOCs ~8–9%. Enter your best guess.</span>
                       )}
                       {d.rate_type === "variable" && (
-                        <span style={{ fontSize: 11, color: "#8cb8b4" }}>Variable rates can change — the plan will use today's rate as a baseline.</span>
+                        <span style={{ fontSize: 11, color: "#8cb8b4" }}>Variable rates can change — plan uses today's rate as baseline.</span>
                       )}
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
@@ -1277,7 +1517,7 @@ export default function App() {
                     {d.type === "student_loan" && (
                       <div style={{ gridColumn: "span 3", display: "flex", flexDirection: "column", gap: 10 }}>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          {[["none","✅ In repayment"],["deferred","⏸ Deferred (no payments, interest accumulating)"],["interest_only","💸 Interest-only payments"]].map(([val, label]) => (
+                          {[["none","✅ In repayment"],["deferred","⏸ Deferred (no payments, balance growing)"],["interest_only","💸 Interest-only payments"]].map(([val, label]) => (
                             <button key={val} onClick={() => updateDebt(i, "repayment_status", val)}
                               style={{ ...btnS, fontSize: 11, padding: "5px 12px", background: (d.repayment_status || "none") === val ? "#1e3a34" : "#0d2420", border: (d.repayment_status || "none") === val ? "1px solid #22a89a" : "1px solid #1e3a34", color: (d.repayment_status || "none") === val ? "#22a89a" : "#8cb8b4" }}>
                               {label}
@@ -1295,7 +1535,7 @@ export default function App() {
                         )}
                         {(d.repayment_status === "interest_only") && (
                           <div>
-                            <p style={{ fontSize: 11, color: "#8cb8b4", margin: "0 0 6px" }}>Paying interest only — balance isn't growing but principal isn't shrinking either. The minimum payment you entered above should reflect this. When does full repayment start?</p>
+                            <p style={{ fontSize: 11, color: "#8cb8b4", margin: "0 0 6px" }}>Paying interest only — balance isn't growing but principal isn't shrinking. The minimum you entered above should reflect this. When does full repayment start?</p>
                             <div style={{ display: "flex", gap: 10 }}>
                               <input type="number" value={d.deferred_until_month} onChange={e => updateDebt(i, "deferred_until_month", e.target.value)} placeholder="Month (1-12)" style={{ ...iS, flex: 1 }} />
                               <input type="number" value={d.deferred_until_year} onChange={e => updateDebt(i, "deferred_until_year", e.target.value)} placeholder="Year (e.g. 2027)" style={{ ...iS, flex: 1 }} />
@@ -1389,7 +1629,7 @@ export default function App() {
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <label style={lS}>Big Upcoming Expenses</label>
-                  <span style={{ fontSize: 11, color: "#8cb8b4" }}>Weddings, renovations, new car, college tuition — anything that will significantly reduce your surplus for a period of time. This helps us build a realistic plan around known future cash drains.</span>
+                  <span style={{ fontSize: 11, color: "#8cb8b4" }}>Weddings, renovations, new car, college tuition — anything that will significantly reduce your surplus. Helps us build a realistic plan.</span>
                   {(form.upcoming_expenses_list || []).map((exp, i) => (
                     <div key={i} style={{ background: "#0a1a17", borderRadius: 8, border: "1px solid #1e3a34", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1411,7 +1651,7 @@ export default function App() {
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                           <label style={lS}>How will you pay for it?</label>
-                          <select value={exp.funding} onChange={e => { const l = [...(form.upcoming_expenses_list||[])]; l[i] = { ...l[i], funding: e.target.value }; setForm(f => ({ ...f, upcoming_expenses_list: l })); }} style={iS}>
+                          <select value={exp.funding || "savings"} onChange={e => { const l = [...(form.upcoming_expenses_list||[])]; l[i] = { ...l[i], funding: e.target.value }; setForm(f => ({ ...f, upcoming_expenses_list: l })); }} style={iS}>
                             <option value="savings">From savings</option>
                             <option value="surplus">From monthly surplus</option>
                             <option value="loan">Taking a loan</option>
