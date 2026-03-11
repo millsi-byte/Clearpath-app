@@ -49,7 +49,7 @@ CRITICAL RULE: Report numbers EXACTLY as entered. Never correct, interpret, or a
 Your job:
 1. Warm 1-sentence acknowledgment using their name
 2. List each earner's take-home EXACTLY as entered, total monthly take-home, any bonuses or stock grants
-3. Flag impossible numbers using only this math check: monthly take-home > (gross_annual / 12) is mathematically impossible before taxes. If that's true for any earner, say exactly: "Nancy's monthly take-home is entered as $45,000, but her gross salary is $95,000/year — that works out to only $7,916/month before taxes, so $45,000/month isn't possible. Did you mean $4,500?"
+3. Flag impossible numbers using only this math check: monthly take-home > (gross_annual / 12) is mathematically impossible before taxes. If that's true for any earner, flag it simply like this — fill in their actual name and numbers: "[Name]'s monthly take-home is entered as $[X], but their gross annual salary is only $[Y]/year — monthly take-home can't be more than someone earns before taxes. Did you mean $[X/10]?" Do not show any intermediate calculations. Just state what was entered, why it's impossible, and suggest the most likely typo correction.
 4. Do NOT silently use a corrected number anywhere in your response. Use the number as entered.
 5. End with "Does this look right, or anything to adjust?"`,
 
@@ -409,7 +409,7 @@ export default function App() {
   const [codeError, setCodeError] = useState("");
   const [codeLoading, setCodeLoading] = useState(false);
 
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(1);
   const [form, setForm] = useState({
     name: "",
     // Per-person earners (replaces flat gross_annual / monthly_takehome / partner_income)
@@ -823,26 +823,10 @@ export default function App() {
 
       <div style={{ maxWidth: 680, margin: "0 auto", padding: "32px 24px" }}>
 
-        {/* ── STEP 0: Welcome ── */}
-        {step === 0 && (
-          <div>
-            {sectionHead("Welcome to Clearpath 🧭", "Let's build your personalized debt payoff plan. This takes about 20–30 minutes.")}
-            <div style={{ background: "#0d2420", borderRadius: 12, border: "1px solid #1e3a34", padding: 24, marginBottom: 20 }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                <label style={lS}>What's your first name?</label>
-                <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} onKeyDown={e => e.key === "Enter" && form.name.trim() && setStep(1)} placeholder="e.g. Sarah" style={iS} autoFocus />
-              </div>
-            </div>
-            <button onClick={() => form.name.trim() && setStep(1)} disabled={!form.name.trim()} style={{ ...btnP, opacity: !form.name.trim() ? 0.4 : 1 }}>
-              Let's go →
-            </button>
-          </div>
-        )}
-
         {/* ── STEP 1: Income ── */}
         {step === 1 && (
           <div>
-            {sectionHead("Income", `Great to meet you, ${form.name}! Let's start with your household income.`)}
+            {sectionHead("Income", "Let's start with your household income.")}
             <div style={{ background: "#0d2420", borderRadius: 12, border: "1px solid #1e3a34", padding: 24 }}>
 
               {groupHead("Household Earners")}
@@ -959,7 +943,7 @@ export default function App() {
               <button onClick={() => {
                 if (!form.earners[0]?.label?.trim()) { alert("Please enter your name."); return; }
                 if (!form.earners[0]?.takehome) { alert("Please enter your monthly take-home pay."); return; }
-                const data = { name: form.name, earners: form.earners, bonuses: form.bonuses, other_income: form.other_income, extra_income: form.extra_income, stock_grants: form.stock_grants };
+                const data = { name: form.earners[0]?.label || "there", earners: form.earners, bonuses: form.bonuses, other_income: form.other_income, extra_income: form.extra_income, stock_grants: form.stock_grants };
                 startReview("income", REVIEW_PROMPTS.income, data);
               }} style={btnP}>Review with Clearpath →</button>
             </div>
