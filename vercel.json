@@ -1,10 +1,12 @@
 {
   "functions": {
     "api/generate.mjs": { "maxDuration": 30 },
-    "api/chat.mjs": { "maxDuration": 30 }
+    "api/chat.mjs": { "maxDuration": 30 },
+    "api/claude.mjs": { "maxDuration": 30 }
   },
   "rewrites": [
     { "source": "/api/generate", "destination": "/api/generate.mjs" },
-    { "source": "/api/chat", "destination": "/api/chat.mjs" }
+    { "source": "/api/chat", "destination": "/api/chat.mjs" },
+    { "source": "/api/claude", "destination": "/api/claude.mjs" }
   ]
 }
