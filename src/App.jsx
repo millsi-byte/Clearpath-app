@@ -966,16 +966,25 @@ export default function App() {
   }
 
   async function downloadExcel() {
-    if (!window.XLSXStyle) {
+    if (!window._xlsxStyleLoaded) {
       await new Promise((resolve, reject) => {
         const s = document.createElement("script");
         s.src = "https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js";
-        s.onload = resolve; s.onerror = reject;
+        s.onload = () => { window._xlsxStyleLoaded = true; resolve(); };
+        s.onerror = () => {
+          const s2 = document.createElement("script");
+          s2.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+          s2.onload = () => { window._xlsxStyleLoaded = true; resolve(); };
+          s2.onerror = reject;
+          document.head.appendChild(s2);
+        };
         document.head.appendChild(s);
       });
     }
-    const XLSX = window.XLSXStyle;
+    const XLSX = window.XLSX;
+    if (!XLSX) { alert("Could not load Excel library. Please check your internet connection and try again."); return; }
 
+    try {
     // ── Style helpers ─────────────────────────────────────────────────────────
     const styleCell = (value, style) => ({ v: value ?? "", s: style });
     const NAVY   = { fgColor: { rgb: "0D2420" } };
@@ -1323,8 +1332,11 @@ export default function App() {
       XLSX.utils.book_append_sheet(wb, ws5, "CHANGELOG");
     }
 
-    XLSX.writeFile(wb, `Clearpath_Plan_${payload.name}_${new Date().getFullYear()}.xlsx`);
-
+      XLSX.writeFile(wb, `Clearpath_Plan_${payload.name}_${new Date().getFullYear()}.xlsx`);
+    } catch(err) {
+      console.error("Excel generation error:", err);
+      alert("Error generating Excel file: " + err.message + "\n\nCheck browser console for details.");
+    }
   }
 
   // ── PLAN CHOICE SCREEN ───────────────────────────────────────────────────────
