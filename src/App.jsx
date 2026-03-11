@@ -345,7 +345,8 @@ function StockGrantFields({ grant, index, updateFn }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
           <label style={lStyle}>Grant Date</label>
-          <input type="month" value={grant.grant_date || ""} onChange={e => updateFn(index, "grant_date", e.target.value)} style={iStyle} />
+          <span style={{ fontSize: 11, color: "#8cb8b4", marginTop: -2 }}>Format: MM/YYYY</span>
+          <input type="text" value={grant.grant_date || ""} onChange={e => updateFn(index, "grant_date", e.target.value)} placeholder="e.g. 03/2024" maxLength={7} style={iStyle} />
         </div>
         {field("Total Grant Value ($)", "total_amount", "number", "e.g. 40000")}
         {selectField("Vest Every", "vest_frequency", [["3","Quarterly (3 mo)"],["6","Semi-annual (6 mo)"],["12","Annual (12 mo)"],["1","Monthly"]])}
@@ -393,7 +394,8 @@ function StockGrantFields({ grant, index, updateFn }) {
         {field("Current Stock Price ($ per share)", "options_current_price", "number", "e.g. 18.00")}
         <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
           <label style={lStyle}>Expiration Date</label>
-          <input type="month" value={grant.options_expiry || ""} onChange={e => updateFn(index, "options_expiry", e.target.value)} style={iStyle} />
+          <span style={{ fontSize: 11, color: "#8cb8b4", marginTop: -2 }}>Format: MM/YYYY</span>
+          <input type="text" value={grant.options_expiry || ""} onChange={e => updateFn(index, "options_expiry", e.target.value)} placeholder="e.g. 06/2027" maxLength={7} style={iStyle} />
         </div>
         {grant.options_count && grant.options_strike && grant.options_current_price && (() => {
           const spread = parseFloat(grant.options_current_price) - parseFloat(grant.options_strike);
@@ -437,15 +439,12 @@ export default function App() {
   const [step, setStep] = useState(0);
   const [form, setForm] = useState({
     name: "",
-    gross_annual: "",
-    monthly_takehome: "",
-    partner_income: "",
+    // Per-person earners (replaces flat gross_annual / monthly_takehome / partner_income)
+    earners: [{ label: "", gross_annual: "", takehome: "" }],
+    // Per-person bonuses (one entry per earner, synced by index)
+    bonuses: [{ type: "none", amount: "", percent: "", month: "December" }],
     other_income: "",
     extra_income: [],
-    bonus_type: "amount",
-    bonus_amount: "",
-    bonus_percent: "",
-    bonus_month: "December",
     // Stock grants: each has a `type` field (RSU/ESPP/Options/Dividend) plus type-specific fields
     stock_grants: [],
     rent: "", mortgage: "", property_tax: "", hoa: "", renters_insurance: "",
@@ -555,9 +554,26 @@ export default function App() {
   // ── Build payload for plan generation ────────────────────────────────────────
   function buildPayload() {
     const f = form;
-    const bonusAfterTax = f.bonus_type === "percent"
-      ? Math.round((parseFloat(f.gross_annual) || 0) * (parseFloat(f.bonus_percent) || 0) / 100 * 0.72)
-      : Math.round((parseFloat(f.bonus_amount) || 0) * 0.72);
+
+    // Sum all earner take-homes
+    const monthlyIn = f.earners.reduce((s, e) => s + (parseFloat(e.takehome) || 0), 0)
+      + (parseFloat(f.other_income) || 0)
+      + f.extra_income.reduce((s, e) => s + (parseFloat(e.amount) || 0), 0);
+
+    // Build bonus windfalls per earner
+    const bonusWindfalls = f.bonuses
+      .map((bonus, i) => {
+        const earner = f.earners[i];
+        if (!earner || bonus.type === "none") return null;
+        const gross = parseFloat(earner.gross_annual) || 0;
+        const pre = bonus.type === "percent"
+          ? gross * (parseFloat(bonus.percent) || 0) / 100
+          : parseFloat(bonus.amount) || 0;
+        const afterTax = Math.round(pre * 0.72);
+        if (!afterTax) return null;
+        return { name: `${earner.label || `Earner #${i+1}`} Bonus`, amount: afterTax, month: bonus.month };
+      })
+      .filter(Boolean);
 
     // Build stock windfalls from type-specific fields
     const stockWindfalls = f.stock_grants.map(g => {
@@ -630,9 +646,14 @@ export default function App() {
       today: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
       income: {
         monthly_takehome: monthlyIn,
-        gross_annual: parseFloat(f.gross_annual) || 0,
-        bonus: bonusAfterTax > 0 ? { amount: bonusAfterTax, month: f.bonus_month } : null,
+        earners: f.earners.map((e, i) => ({
+          label: e.label || `Earner #${i+1}`,
+          gross_annual: parseFloat(e.gross_annual) || 0,
+          takehome: parseFloat(e.takehome) || 0,
+        })),
+        bonuses: bonusWindfalls,
         stock_windfalls: stockWindfalls,
+        other_monthly: parseFloat(f.other_income) || 0,
       },
       expenses: {
         regular: regularExp,
@@ -708,8 +729,7 @@ export default function App() {
   function updateExtraIncome(i, k, v) { setForm(f => { const ei = [...f.extra_income]; ei[i] = { ...ei[i], [k]: v }; return { ...f, extra_income: ei }; }); }
   function removeExtraIncome(i) { setForm(f => ({ ...f, extra_income: f.extra_income.filter((_, idx) => idx !== i) })); }
 
-  function addStockGrant() { setForm(f => ({ ...f, stock_grants: [...f.stock_grants, { type: "RSU", grant_date: "", total_amount: "", vest_frequency: "12", vest_duration: "48", tax_withholding: "22" }] })); }
-  function updateStockGrant(i, k, v) { setForm(f => { const sg = [...f.stock_grants]; sg[i] = { ...sg[i], [k]: v }; return { ...f, stock_grants: sg }; }); }
+  function addStockGrant() { setForm(f => ({ ...f, stock_grants: [...f.stock_grants, { type: "RSU", grant_date: "", total_amount: "", vest_frequency: "12", vest_duration: "48", tax_withholding: "22" }] })); }  function updateStockGrant(i, k, v) { setForm(f => { const sg = [...f.stock_grants]; sg[i] = { ...sg[i], [k]: v }; return { ...f, stock_grants: sg }; }); }
   function removeStockGrant(i) { setForm(f => ({ ...f, stock_grants: f.stock_grants.filter((_, idx) => idx !== i) })); }
 
   function addIrregularExpense() { setForm(f => ({ ...f, irregular_expenses: [...f.irregular_expenses, { name: "", mode: "spread", annual_total: "", entries: [{ month: "1", amount: "" }] }] })); }
@@ -881,60 +901,85 @@ export default function App() {
             {sectionHead("Income", `Great to meet you, ${form.name}! Let's start with your household income.`)}
             <div style={{ background: "#0d2420", borderRadius: 12, border: "1px solid #1e3a34", padding: 24 }}>
 
-              {groupHead("Household Salary")}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  <label style={lS}>Gross Annual Household Salary</label>
-                  <input type="number" value={form.gross_annual} onChange={e => setForm(f => ({ ...f, gross_annual: e.target.value }))} placeholder="e.g. 120000" style={iS} />
-                  <span style={{ fontSize: 11, color: "#8cb8b4" }}>Before taxes — base salary only, not bonuses or stock</span>
+              {groupHead("Household Earners")}
+              <p style={{ fontSize: 12, color: "#8cb8b4", margin: "-8px 0 14px", lineHeight: 1.6 }}>
+                Enter each person separately. Base salary only — no bonuses or stock yet (we'll capture those below).
+              </p>
+              {form.earners.map((earner, i) => (
+                <div key={i} style={{ background: "#0a1a17", borderRadius: 10, border: "1px solid #1e3a34", padding: 14, marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <span style={{ color: "#22a89a", fontSize: 12, fontWeight: 700 }}>Earner #{i + 1}</span>
+                    {i > 0 && <button onClick={() => setForm(f => ({ ...f, earners: f.earners.filter((_, idx) => idx !== i) }))} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 18 }}>×</button>}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <label style={lS}>Name / Label</label>
+                      <input value={earner.label} onChange={e => { const ea = [...form.earners]; ea[i] = { ...ea[i], label: e.target.value }; setForm(f => ({ ...f, earners: ea })); }} placeholder={i === 0 ? "e.g. Me" : "e.g. Spouse"} style={iS} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <label style={lS}>Gross Annual Base Salary</label>
+                      <span style={{ fontSize: 11, color: "#8cb8b4", marginTop: -2 }}>Before taxes, base only</span>
+                      <input type="number" value={earner.gross_annual} onChange={e => { const ea = [...form.earners]; ea[i] = { ...ea[i], gross_annual: e.target.value }; setForm(f => ({ ...f, earners: ea })); }} placeholder="e.g. 75000" style={iS} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <label style={lS}>Monthly Take-Home</label>
+                      <span style={{ fontSize: 11, color: "#8cb8b4", marginTop: -2 }}>After taxes, into bank</span>
+                      <input type="number" value={earner.takehome} onChange={e => { const ea = [...form.earners]; ea[i] = { ...ea[i], takehome: e.target.value }; setForm(f => ({ ...f, earners: ea })); }} placeholder="e.g. 4500" style={iS} />
+                    </div>
+                  </div>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  <label style={lS}>Your Monthly Take-Home</label>
-                  <input type="number" value={form.monthly_takehome} onChange={e => setForm(f => ({ ...f, monthly_takehome: e.target.value }))} placeholder="e.g. 4500" style={iS} />
-                  <span style={{ fontSize: 11, color: "#8cb8b4" }}>After taxes, what lands in your bank</span>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  <label style={lS}>Partner/Spouse Monthly Take-Home</label>
-                  <input type="number" value={form.partner_income} onChange={e => setForm(f => ({ ...f, partner_income: e.target.value }))} placeholder="e.g. 3200 (or 0)" style={iS} />
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  <label style={lS}>Other Monthly Income</label>
-                  <input type="number" value={form.other_income} onChange={e => setForm(f => ({ ...f, other_income: e.target.value }))} placeholder="Rental, freelance, etc." style={iS} />
-                </div>
+              ))}
+              <button onClick={() => setForm(f => ({ ...f, earners: [...f.earners, { label: "", gross_annual: "", takehome: "" }], bonuses: [...f.bonuses, { type: "none", amount: "", percent: "", month: "December" }] }))} style={{ ...btnS, fontSize: 12, marginBottom: 4 }}>+ Add another earner</button>
+
+              {groupHead("Other Monthly Income")}
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                <label style={lS}>Other Monthly Income</label>
+                <span style={{ fontSize: 11, color: "#8cb8b4" }}>Rental income, freelance, Social Security, alimony received, etc.</span>
+                <input type="number" value={form.other_income} onChange={e => setForm(f => ({ ...f, other_income: e.target.value }))} placeholder="e.g. 500 (or leave blank)" style={{ ...iS, maxWidth: 220 }} />
               </div>
 
-              {groupHead("Bonus")}
-              <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-                {["amount", "percent"].map(t => (
-                  <button key={t} onClick={() => setForm(f => ({ ...f, bonus_type: t }))} style={{ ...btnS, flex: 1, background: form.bonus_type === t ? "#1e3a34" : "#0d2420", border: form.bonus_type === t ? "1px solid #22a89a" : "1px solid #1e3a34", color: form.bonus_type === t ? "#22a89a" : "#8cb8b4" }}>
-                    {t === "amount" ? "$ Fixed amount" : "% of gross salary"}
-                  </button>
-                ))}
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                {form.bonus_type === "amount" ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                    <label style={lS}>Bonus Amount (pre-tax)</label>
-                    <input type="number" value={form.bonus_amount} onChange={e => setForm(f => ({ ...f, bonus_amount: e.target.value }))} placeholder="e.g. 8000" style={iS} />
-                  </div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                    <label style={lS}>Bonus % of Gross Salary</label>
-                    <input type="number" value={form.bonus_percent} onChange={e => setForm(f => ({ ...f, bonus_percent: e.target.value }))} placeholder="e.g. 10" style={iS} />
-                    {form.bonus_percent && form.gross_annual && (
-                      <span style={{ fontSize: 11, color: "#22a89a" }}>
-                        ≈ ${Math.round((parseFloat(form.gross_annual) * parseFloat(form.bonus_percent) / 100) * 0.72).toLocaleString()} after ~28% tax
-                      </span>
+              {groupHead("Bonuses")}
+              <p style={{ fontSize: 12, color: "#8cb8b4", margin: "-8px 0 14px" }}>Add a bonus for each earner who receives one. Leave blank if none.</p>
+              {form.bonuses.map((bonus, i) => {
+                const earnerLabel = form.earners[i]?.label || `Earner #${i + 1}`;
+                const earnerGross = parseFloat(form.earners[i]?.gross_annual) || 0;
+                return (
+                  <div key={i} style={{ background: "#0a1a17", borderRadius: 10, border: "1px solid #1e3a34", padding: 14, marginBottom: 12 }}>
+                    <div style={{ marginBottom: 10, fontSize: 12, color: "#22a89a", fontWeight: 700 }}>{earnerLabel}'s Bonus</div>
+                    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                      {["none","amount","percent"].map(t => (
+                        <button key={t} onClick={() => { const b = [...form.bonuses]; b[i] = { ...b[i], type: t }; setForm(f => ({ ...f, bonuses: b })); }}
+                          style={{ ...btnS, flex: 1, fontSize: 11, background: bonus.type === t ? "#1e3a34" : "#0d2420", border: bonus.type === t ? "1px solid #22a89a" : "1px solid #1e3a34", color: bonus.type === t ? "#22a89a" : "#8cb8b4" }}>
+                          {t === "none" ? "No bonus" : t === "amount" ? "$ Fixed amount" : "% of salary"}
+                        </button>
+                      ))}
+                    </div>
+                    {bonus.type !== "none" && (
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                        {bonus.type === "amount" ? (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                            <label style={lS}>Bonus Amount (pre-tax)</label>
+                            <input type="number" value={bonus.amount} onChange={e => { const b = [...form.bonuses]; b[i] = { ...b[i], amount: e.target.value }; setForm(f => ({ ...f, bonuses: b })); }} placeholder="e.g. 8000" style={iS} />
+                            {bonus.amount && <span style={{ fontSize: 11, color: "#22a89a" }}>≈ ${Math.round(parseFloat(bonus.amount) * 0.72).toLocaleString()} after ~28% tax</span>}
+                          </div>
+                        ) : (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                            <label style={lS}>Bonus % of {earnerLabel}'s Gross Salary</label>
+                            <input type="number" value={bonus.percent} onChange={e => { const b = [...form.bonuses]; b[i] = { ...b[i], percent: e.target.value }; setForm(f => ({ ...f, bonuses: b })); }} placeholder="e.g. 10" style={iS} />
+                            {bonus.percent && earnerGross > 0 && <span style={{ fontSize: 11, color: "#22a89a" }}>≈ ${Math.round(earnerGross * parseFloat(bonus.percent) / 100 * 0.72).toLocaleString()} after ~28% tax</span>}
+                          </div>
+                        )}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                          <label style={lS}>Typical Bonus Month</label>
+                          <select value={bonus.month} onChange={e => { const b = [...form.bonuses]; b[i] = { ...b[i], month: e.target.value }; setForm(f => ({ ...f, bonuses: b })); }} style={iS}>
+                            {MONTH_FULL.map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                        </div>
+                      </div>
                     )}
                   </div>
-                )}
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  <label style={lS}>Typical Bonus Month</label>
-                  <select value={form.bonus_month} onChange={e => setForm(f => ({ ...f, bonus_month: e.target.value }))} style={iS}>
-                    {MONTH_FULL.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </div>
-              </div>
+                );
+              })}
 
               {groupHead("Stock Compensation")}
               <p style={{ fontSize: 12, color: "#8cb8b4", marginBottom: 14 }}>
@@ -968,13 +1013,13 @@ export default function App() {
 
             <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
               <button onClick={() => {
-                const data = { name: form.name, gross_annual: form.gross_annual, monthly_takehome: form.monthly_takehome, partner_income: form.partner_income, other_income: form.other_income, extra_income: form.extra_income, bonus_type: form.bonus_type, bonus_amount: form.bonus_amount, bonus_percent: form.bonus_percent, bonus_month: form.bonus_month, stock_grants: form.stock_grants };
+                const data = { name: form.name, earners: form.earners, bonuses: form.bonuses, other_income: form.other_income, extra_income: form.extra_income, stock_grants: form.stock_grants };
                 startReview("income", REVIEW_PROMPTS.income, data);
               }} style={btnP}>Review with Clearpath →</button>
             </div>
             {reviews.income.status !== "idle" && (
               <ReviewPanel sectionId="income" review={reviews.income}
-                onSendMessage={(msg) => sendReviewMessage("income", msg, REVIEW_PROMPTS.income, { name: form.name, gross_annual: form.gross_annual, monthly_takehome: form.monthly_takehome, partner_income: form.partner_income, other_income: form.other_income, extra_income: form.extra_income, bonus_type: form.bonus_type, bonus_amount: form.bonus_amount, bonus_percent: form.bonus_percent, bonus_month: form.bonus_month, stock_grants: form.stock_grants })}
+                onSendMessage={(msg) => sendReviewMessage("income", msg, REVIEW_PROMPTS.income, { name: form.name, earners: form.earners, bonuses: form.bonuses, other_income: form.other_income, extra_income: form.extra_income, stock_grants: form.stock_grants })}
                 onConfirm={() => confirmReview("income")}
                 onEdit={() => editSection("income", 1)} />
             )}
