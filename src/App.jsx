@@ -524,15 +524,20 @@ export default function App() {
       const res = await sbFetch(`access_codes?code=eq.${encodeURIComponent(code)}&select=code,expires_at`);
       const data = await res.json();
       if (!data?.length) { setCodeError("Code not found. Check your confirmation email."); setCodeLoading(false); return; }
-      // Check expiry if column exists
       if (data[0].expires_at && new Date(data[0].expires_at) < new Date()) {
         setCodeError("This access code has expired (90-day limit). Please purchase a new plan."); setCodeLoading(false); return;
       }
       setActiveCode(code);
-      // Load any saved plans for this code
-      const plansRes = await sbFetch(`plans?access_code=eq.${encodeURIComponent(code)}&select=id,created_at,plan_name,plan_text,form_data,plan_choice&order=created_at.desc`);
-      const plansData = await plansRes.json();
-      setSavedPlans(Array.isArray(plansData) ? plansData : []);
+      // Try to load saved plans — non-fatal if plans table doesn't exist yet
+      try {
+        const plansRes = await sbFetch(`plans?access_code=eq.${encodeURIComponent(code)}&select=id,created_at,plan_name,plan_text,form_data,plan_choice&order=created_at.desc`);
+        if (plansRes.ok) {
+          const plansData = await plansRes.json();
+          setSavedPlans(Array.isArray(plansData) ? plansData : []);
+        }
+      } catch {
+        setSavedPlans([]); // Table doesn't exist yet — that's fine
+      }
       setScreen("dashboard");
     } catch {
       setCodeError("Connection error. Please try again.");
@@ -716,10 +721,10 @@ export default function App() {
       const reply = await callClaude(PLAN_SYSTEM_PROMPT, [{ role: "user", content: JSON.stringify(payload, null, 2) }], 3000);
       setPlanText(reply);
       setPlanChoice(null);
-      // Save plan to Supabase
+      // Save plan to Supabase — non-fatal
       try {
-        const planName = `Plan ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
-        await sbFetch("plans", {
+        const planName = `Plan — ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
+        const saveRes = await sbFetch("plans", {
           method: "POST",
           body: JSON.stringify({
             access_code: activeCode,
@@ -729,10 +734,13 @@ export default function App() {
             plan_choice: null,
           }),
         });
-        // Refresh saved plans list
-        const plansRes = await sbFetch(`plans?access_code=eq.${encodeURIComponent(activeCode)}&select=id,created_at,plan_name,plan_text,form_data,plan_choice&order=created_at.desc`);
-        const plansData = await plansRes.json();
-        setSavedPlans(Array.isArray(plansData) ? plansData : []);
+        if (saveRes.ok) {
+          const plansRes = await sbFetch(`plans?access_code=eq.${encodeURIComponent(activeCode)}&select=id,created_at,plan_name,plan_text,form_data,plan_choice&order=created_at.desc`);
+          if (plansRes.ok) {
+            const plansData = await plansRes.json();
+            setSavedPlans(Array.isArray(plansData) ? plansData : []);
+          }
+        }
       } catch (saveErr) {
         console.warn("Plan save failed (non-critical):", saveErr);
       }
@@ -866,8 +874,12 @@ export default function App() {
           <span style={{ fontSize: 12, color: "#475569", marginLeft: 8 }}>Code: {activeCode}</span>
         </div>
         <div style={{ maxWidth: 720, margin: "0 auto", padding: "40px 24px" }}>
-          <h1 style={{ color: "#e8c87a", fontSize: 24, fontWeight: 800, margin: "0 0 6px" }}>Welcome back 👋</h1>
-          <p style={{ color: "#8cb8b4", fontSize: 14, margin: "0 0 32px" }}>Start a new plan or pick up where you left off.</p>
+          <h1 style={{ color: "#e8c87a", fontSize: 24, fontWeight: 800, margin: "0 0 6px" }}>
+            {savedPlans.length > 0 ? "Welcome back 👋" : "Welcome to Clearpath 👋"}
+          </h1>
+          <p style={{ color: "#8cb8b4", fontSize: 14, margin: "0 0 32px" }}>
+            {savedPlans.length > 0 ? "Pick up where you left off, or start a new plan." : "Let's build your personalized debt payoff plan."}
+          </p>
 
           {savedPlans.length > 0 && (
             <div style={{ marginBottom: 32 }}>
