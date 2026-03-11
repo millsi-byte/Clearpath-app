@@ -633,10 +633,6 @@ export default function App() {
       });
 
     const monthlyIrreg = irregularExp.reduce((a, e) => a + e.amount, 0) / 12;
-    const monthlyIn = (parseFloat(f.monthly_takehome) || 0)
-      + (parseFloat(f.partner_income) || 0)
-      + (parseFloat(f.other_income) || 0)
-      + f.extra_income.reduce((s, e) => s + (parseFloat(e.amount) || 0), 0);
     const totalExp = regularExp.reduce((a, e) => a + e.amount, 0) + monthlyIrreg;
     const totalMins = f.debts.reduce((a, d) => a + (parseFloat(d.min) || 0), 0);
     const committed = parseFloat(f.monthly_committed) || 0;
