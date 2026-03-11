@@ -505,6 +505,7 @@ export default function App() {
   const [planText, setPlanText] = useState("");
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState("");
+  const [planChoice, setPlanChoice] = useState(null); // null = choosing, "A"|"B"|"C" = chosen
   const [qaMessages, setQaMessages] = useState([]);
   const [qaInput, setQaInput] = useState("");
   const [qaLoading, setQaLoading] = useState(false);
@@ -700,7 +701,8 @@ export default function App() {
       const payload = buildPayload();
       const reply = await callClaude(PLAN_SYSTEM_PROMPT, [{ role: "user", content: JSON.stringify(payload, null, 2) }], 3000);
       setPlanText(reply);
-      setScreen("plan");
+      setPlanChoice(null);
+      setScreen("plan-choice");
     } catch (err) {
       setPlanError("Plan generation failed: " + err.message);
     }
@@ -770,9 +772,16 @@ export default function App() {
 
   const STEPS = ["Welcome", "Income", "Monthly Expenses", "Annual Expenses", "Debts", "Goals"];
 
+  // Deficit detection (JS math — never delegated to Claude)
+  function computeDeficit(payload) {
+    const surplus = payload.income.monthly_takehome - payload.expenses.total_monthly;
+    const afterMins = surplus - payload.total_minimums;
+    return { surplus, afterMins, isDeficit: afterMins < 0 };
+  }
+
   // Must be before any conditional returns — Rules of Hooks
   useEffect(() => {
-    if (screen === "plan") window.scrollTo({ top: 0, behavior: "instant" });
+    if (screen === "plan" || screen === "plan-choice") window.scrollTo({ top: 0, behavior: "instant" });
   }, [screen]);
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -814,11 +823,149 @@ export default function App() {
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // PLAN SCREEN
+  // PLAN SCREENS
   // ────────────────────────────────────────────────────────────────────────────
 
+  // Full amortization engine — matches the demo Excel exactly
+  function runAmortization(payload, attackOrder) {
+    const debts = payload.debts.map(d => ({
+      ...d,
+      balance: d.balance,
+      rate: d.rate,
+      min: d.min,
+    }));
+    const debtMap = {};
+    debts.forEach(d => { debtMap[d.name] = { ...d }; });
+
+    const attackQueue = attackOrder
+      ? attackOrder.map(name => debtMap[name]).filter(Boolean)
+      : [...debts].sort((a, b) => b.rate - a.rate);
+
+    const months = [];
+    const today = new Date();
+    let balances = {};
+    debts.forEach(d => { balances[d.name] = d.balance; });
+
+    const irregByMonth = {};
+    (payload.expenses.irregular || []).forEach(exp => {
+      if (exp.mode === "specific_months") {
+        (exp.months || []).forEach(m => {
+          if (!irregByMonth[m]) irregByMonth[m] = [];
+          irregByMonth[m].push({ name: exp.name, amount: exp.amount });
+        });
+      }
+    });
+
+    const windfalls = {};
+    (payload.windfalls || []).forEach(w => {
+      const key = `${w.year}-${w.month}`;
+      if (!windfalls[key]) windfalls[key] = 0;
+      windfalls[key] += w.amount;
+    });
+
+    let extraPerMonth = payload.extra_monthly;
+    let totalMins = payload.total_minimums;
+    const incomeChanges = (payload.income.income_changes || []);
+
+    for (let m = 0; m < 120; m++) {
+      const date = new Date(today.getFullYear(), today.getMonth() + m, 1);
+      const calMonth = date.getMonth() + 1;
+      const calYear = date.getFullYear();
+      const label = date.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+
+      // Income changes
+      incomeChanges.forEach(ic => {
+        if (ic.year === calYear && ic.month === calMonth) extraPerMonth += ic.delta;
+      });
+
+      // Deferred loans activating
+      debts.forEach(d => {
+        if (d.deferred_until && d.deferred_until.year === calYear && d.deferred_until.month === calMonth) {
+          totalMins += d.min;
+          extraPerMonth -= d.min;
+        }
+      });
+
+      // Windfalls
+      const windfall = windfalls[`${calYear}-${calMonth}`] || 0;
+
+      // Irregular expenses this month
+      const irregThisMonth = (irregByMonth[calMonth] || []);
+
+      // Accrue interest on all balances
+      const interestByDebt = {};
+      debts.forEach(d => {
+        const b = balances[d.name];
+        if (b > 0) {
+          interestByDebt[d.name] = b * d.rate / 12;
+          balances[d.name] = b + interestByDebt[d.name];
+        } else {
+          interestByDebt[d.name] = 0;
+        }
+      });
+
+      // Apply minimums
+      const minPaidByDebt = {};
+      debts.forEach(d => {
+        if (balances[d.name] > 0) {
+          const pay = Math.min(d.min, balances[d.name]);
+          balances[d.name] -= pay;
+          minPaidByDebt[d.name] = pay;
+        } else {
+          minPaidByDebt[d.name] = 0;
+        }
+      });
+
+      // Apply extra + windfall to current attack target
+      let extraToApply = Math.max(0, extraPerMonth) + windfall;
+      const extraByDebt = {};
+      debts.forEach(d => { extraByDebt[d.name] = 0; });
+
+      for (const target of attackQueue) {
+        if (extraToApply <= 0) break;
+        if (balances[target.name] > 0) {
+          const pay = Math.min(extraToApply, balances[target.name]);
+          balances[target.name] -= pay;
+          extraByDebt[target.name] = (extraByDebt[target.name] || 0) + pay;
+          extraToApply -= pay;
+          // Cascade: if this debt is now paid, freed minimum rolls into next month's extra
+          if (balances[target.name] < 0.01) {
+            balances[target.name] = 0;
+            extraPerMonth += target.min;
+            totalMins -= target.min;
+          }
+          break;
+        }
+      }
+
+      const totalRemaining = Object.values(balances).reduce((a, b) => a + b, 0);
+      const snapBalances = {};
+      debts.forEach(d => { snapBalances[d.name] = Math.max(0, Math.round(balances[d.name] * 100) / 100); });
+
+      months.push({
+        label, calMonth, calYear, date,
+        income: payload.income.monthly_takehome,
+        windfall,
+        totalIncome: payload.income.monthly_takehome + windfall,
+        regularExpenses: payload.expenses.regular,
+        regularTotal: payload.expenses.total_monthly - payload.expenses.monthly_irregular_equiv,
+        irregThisMonth,
+        irregTotal: irregThisMonth.reduce((a, e) => a + e.amount, 0),
+        totalExpenses: (payload.expenses.total_monthly - payload.expenses.monthly_irregular_equiv) + irregThisMonth.reduce((a, e) => a + e.amount, 0),
+        netSurplus: (payload.income.monthly_takehome + windfall) - ((payload.expenses.total_monthly - payload.expenses.monthly_irregular_equiv) + irregThisMonth.reduce((a, e) => a + e.amount, 0)),
+        totalMins: Math.round(totalMins),
+        extraApplied: Math.round(Object.values(extraByDebt).reduce((a, b) => a + b, 0)),
+        interestByDebt, minPaidByDebt, extraByDebt,
+        balances: snapBalances,
+        totalRemaining: Math.round(totalRemaining),
+      });
+
+      if (totalRemaining < 1) break;
+    }
+    return months;
+  }
+
   async function downloadExcel() {
-    const payload = buildPayload();
     if (!window.XLSX) {
       await new Promise((resolve, reject) => {
         const s = document.createElement("script");
@@ -828,62 +975,421 @@ export default function App() {
       });
     }
     const XLSX = window.XLSX;
+    const payload = buildPayload();
+    const debtDef = computeDeficit(payload);
+
+    // Determine attack order from plan text (look for ordering clues) or fall back to avalanche
+    const attackOrder = payload.debts
+      .slice()
+      .sort((a, b) => b.rate - a.rate)
+      .map(d => d.name);
+
+    const months = runAmortization(payload, attackOrder);
     const wb = XLSX.utils.book_new();
-
-    const summaryRows = [
-      ["CLEARPATH DEBT PAYOFF PLAN", "", ""],
-      [`Generated: ${payload.today}`, "", ""],
-      ["", "", ""],
-      ["INCOME", "", ""],
-      ["Monthly take-home", `$${payload.income.monthly_takehome.toLocaleString()}`, ""],
-      ["", "", ""],
-      ["MONTHLY EXPENSES", "", ""],
-      ...payload.expenses.regular.map(e => [e.name, `$${e.amount.toLocaleString()}`, ""]),
-      ["Annual expenses (÷12)", `$${payload.expenses.monthly_irregular_equiv.toLocaleString()}`, ""],
-      ["Total monthly expenses", `$${payload.expenses.total_monthly.toLocaleString()}`, ""],
-      ["", "", ""],
-      ["DEBTS", "Balance", "Rate | Min Payment"],
-      ...payload.debts.map(d => [d.name, `$${d.balance.toLocaleString()}`, `${(d.rate * 100).toFixed(2)}% | $${d.min}/mo`]),
-      ["Total debt", `$${payload.total_debt.toLocaleString()}`, ""],
-      ["Total minimums", `$${payload.total_minimums.toLocaleString()}/mo`, ""],
-      ["", "", ""],
-      ["PLAN SETTINGS", "", ""],
-      ["Monthly committed", `$${payload.monthly_committed.toLocaleString()}`, ""],
-      ["Extra above minimums", `$${payload.extra_monthly.toLocaleString()}`, ""],
-      ["Priority", payload.goals.priority, ""],
-    ];
-    const ws1 = XLSX.utils.aoa_to_sheet(summaryRows);
-    ws1["!cols"] = [{ wch: 36 }, { wch: 20 }, { wch: 24 }];
-    XLSX.utils.book_append_sheet(wb, ws1, "Summary");
-
-    const planRows = planText.split("\n").map(line => [line]);
-    const ws2 = XLSX.utils.aoa_to_sheet(planRows);
-    ws2["!cols"] = [{ wch: 100 }];
-    XLSX.utils.book_append_sheet(wb, ws2, "Your Plan");
-
-    const trackerHeader = ["Month", ...payload.debts.map(d => d.name), "Total Remaining"];
-    const trackerRows = [trackerHeader];
-    let balances = payload.debts.map(d => d.balance);
-    const rates = payload.debts.map(d => d.rate);
-    const mins = payload.debts.map(d => d.min);
-    const extra = payload.extra_monthly;
     const today = new Date();
-    for (let m = 0; m < 60; m++) {
-      const date = new Date(today.getFullYear(), today.getMonth() + m, 1);
-      const label = date.toLocaleDateString("en-US", { month: "short", year: "numeric" });
-      balances = balances.map((b, i) => Math.max(0, b + b * rates[i] / 12));
-      balances = balances.map((b, i) => Math.max(0, b - mins[i]));
-      let rem = extra;
-      balances = balances.map(b => { if (rem > 0 && b > 0) { const pay = Math.min(rem, b); rem -= pay; return b - pay; } return b; });
-      const total = balances.reduce((a, b) => a + b, 0);
-      trackerRows.push([label, ...balances.map(b => b > 0.5 ? Math.round(b) : "PAID OFF"), Math.round(total)]);
-      if (total < 1) break;
-    }
-    const ws3 = XLSX.utils.aoa_to_sheet(trackerRows);
-    ws3["!cols"] = [{ wch: 14 }, ...payload.debts.map(() => ({ wch: 18 })), { wch: 18 }];
-    XLSX.utils.book_append_sheet(wb, ws3, "60-Month Tracker");
+    const genDate = today.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+    const strategy = payload.goals.priority === "cash_flow" ? "Snowball" : "Avalanche";
+    const debtFreeMonth = months.length > 0 ? months[months.length - 1].label : "TBD";
+
+    // ── SHEET 1: START HERE ──────────────────────────────────────────────────
+    const startRows = [
+      [null, "DEBT PAYOFF PLANNER"],
+      [null, `Your personalized AI-generated debt elimination plan  ·  Generated ${genDate}  ·  Strategy: ${strategy}  ·  Debt-Free Target: ${debtFreeMonth}`],
+      [],
+      [null, "  WHAT IS THIS FILE?"],
+      [null, "     This spreadsheet is your complete, personalized debt payoff plan — built specifically for you based on your income, expenses, and debts, and calculated month by month until you are completely debt free."],
+      [null, "     The plan shows you exactly what to pay on each debt every month, how your balances shrink over time, when each debt disappears, and how much interest you save compared to making only minimum payments forever."],
+      [],
+      [null, "  WHAT'S IN EACH TAB"],
+      [null, "TAB", "WHAT IT SHOWS", null, "WHEN TO USE IT"],
+      [null, "  START HERE", "  Overview, instructions, color guide, and disclaimers.", null, "  Once at the start. Return anytime you have questions."],
+      [null, "  My Plan", "  Strategy summary, attack order, milestone dates, and plain-English plan explanation.", null, "  Read first. Refer back for the big picture."],
+      [null, "  Month-by-Month", "  24 months of full detail: every expense, what to pay on each debt, ending balances.", null, "  Every month — your primary action tab."],
+      [null, "  Year-by-Year", "  Full timeline to debt-free: per-loan interest, principal, extra payments, end balances.", null, "  Review annually against your actual progress."],
+      [],
+      [null, "  HOW TO USE THIS PLAN  —  STEP BY STEP"],
+      [null, "  Step 1  —  Read your plan"],
+      [null, "     Open MY PLAN. Read the strategy and attack order. Understand which debt you're attacking first and why. Add the milestone dates to your calendar."],
+      [null, "  Step 2  —  Act every month  ← THE MOST IMPORTANT STEP"],
+      [null, "     Open MONTH-BY-MONTH. Find the current month. Look at PAYMENTS THIS MONTH. Pay exactly those amounts. Do not pay extra on non-target debts — concentrate your surplus on the single target debt."],
+      [null, "  Step 3  —  Apply windfalls immediately"],
+      [null, "     Tax refund, bonus, unexpected cash? Apply it directly to your current target debt. Even $500 extra on a high-interest balance saves multiples of that in interest."],
+      [null, "  Step 4  —  Review annually"],
+      [null, "     Once a year open YEAR-BY-YEAR and compare where you actually are to the projection. Small differences are normal. If you're ahead — great. If behind, see Step 5."],
+      [null, "  Step 5  —  Start over if anything big changes"],
+      [null, "     Re-running the AI interview takes 15 minutes and gives you a fresh plan that reflects your current reality."],
+      [],
+      [null, "  WHEN TO START OVER  —  RE-RUN THE AI INTERVIEW"],
+      [null, "     This plan is a point-in-time snapshot. Small month-to-month variations are fine. But these changes are big enough to warrant a fresh plan:"],
+      [null, "  💼  Income changes ±$500+/mo", null, null, "  New job, raise, pay cut, retirement."],
+      [null, "  💳  You take on new debt", null, null, "  New loan, credit card balance, medical payment plan."],
+      [null, "  🏦  You refinance any debt", null, null, "  Rate and/or payment changes."],
+      [null, "  💸  Expenses change significantly", null, null, "  New home, new childcare, major insurance change."],
+      [null, "  ⚠️  Off-plan for 3+ months", null, null, "  A fresh plan reflects where you actually are."],
+      [],
+      [null, "  COLOR CODING GUIDE"],
+      [null, "COLOR", "WHAT IT MEANS THROUGHOUT THIS FILE"],
+      [null, "  Gold / Yellow", "  Current target debt · TOTAL SEND payment amount · This is where your extra money goes this month."],
+      [null, "  Green", "  Paid off · Extra principal applied · Windfalls received · Milestones achieved."],
+      [null, "  Red / Orange", "  Interest costs · Irregular expenses hitting this month."],
+      [null, "  Blue", "  Summary totals — total income, total remaining debt, year-end balance summaries."],
+      [],
+      ...(debtDef.isDeficit ? [
+        [null, "  ⚠️  IMPORTANT NOTICE  —  DEFICIT DETECTED"],
+        [null, `     Based on your numbers, your monthly debt minimums ($${payload.total_minimums.toLocaleString()}) exceed your available surplus after expenses. This plan still shows your payoff math, but without changes to income or expenses, balances will continue to grow.`],
+        [null, "     We recommend speaking with a nonprofit credit counselor. The NFCC (National Foundation for Credit Counseling) offers free or low-cost help: nfcc.org  ·  1-800-388-2227"],
+        [],
+      ] : []),
+      [null, "  A NOTE ON CONSISTENCY  —  THE MOST IMPORTANT THING"],
+      [null, "     The plan only works if you follow it — but following it doesn't mean perfection. Missing one month shifts your debt-free date by a few weeks at most. The danger isn't individual bad months — it is losing momentum entirely."],
+      [],
+      [null, "  DISCLAIMER"],
+      [null, "     This plan is generated by an AI planning tool and is based solely on the information you provided. It is not financial, legal, or tax advice. Clearpath is not a licensed financial advisor. For complex situations — bankruptcy, IRS debt, significant investment decisions — consult a licensed professional."],
+    ];
+    const ws1 = XLSX.utils.aoa_to_sheet(startRows);
+    ws1["!cols"] = [{ wch: 4 }, { wch: 40 }, { wch: 50 }, { wch: 4 }, { wch: 50 }];
+    XLSX.utils.book_append_sheet(wb, ws1, "START HERE");
+
+    // ── SHEET 2: My Plan ────────────────────────────────────────────────────
+    const payoffDates = {};
+    months.forEach(mo => {
+      payload.debts.forEach(d => {
+        if (!payoffDates[d.name] && mo.balances[d.name] === 0) payoffDates[d.name] = mo.label;
+      });
+    });
+
+    const totalInterest = months.reduce((sum, mo) => {
+      return sum + Object.values(mo.interestByDebt).reduce((a, b) => a + b, 0);
+    }, 0);
+
+    const planRows = [
+      [`DEBT PAYOFF PLAN  —  ${payload.name.toUpperCase()}`],
+      [`Generated ${genDate}   ·   Strategy: ${strategy}   ·   Debt-Free Target: ${debtFreeMonth}`],
+      [],
+      ["  FINANCIAL SNAPSHOT"],
+      [null, null, "Amount"],
+      [null, "  Monthly Take-Home Income", payload.income.monthly_takehome],
+      [null, "  Monthly Regular Expenses", Math.round(payload.expenses.total_monthly - payload.expenses.monthly_irregular_equiv)],
+      [null, "  Monthly Avg — Irregular/Seasonal Costs", Math.round(payload.expenses.monthly_irregular_equiv)],
+      [null, "  Average True Monthly Surplus", Math.round(payload.income.monthly_takehome - payload.expenses.total_monthly)],
+      [null, "  Monthly Committed to Debt Payoff", payload.monthly_committed],
+      [null, "  Emergency Fund  (Current / Target)", `$${payload.goals.emergency_fund_current.toLocaleString()}  /  $${payload.goals.emergency_fund_target.toLocaleString()}`],
+      [],
+      ...(debtDef.isDeficit ? [
+        ["  ⚠️  DEFICIT WARNING"],
+        [null, `  Your minimum debt payments ($${payload.total_minimums.toLocaleString()}/mo) exceed your available surplus. Without increasing income or reducing expenses, balances will grow. Consider speaking with a nonprofit credit counselor: nfcc.org`],
+        [],
+      ] : []),
+      [`  DEBT ATTACK ORDER  (${strategy} — ${strategy === "Avalanche" ? "Highest Rate First" : "Smallest Balance First"})`],
+      [null, "Priority", "Debt Name", "Current Balance", "Rate", "Min Payment/Mo", "Payoff Date"],
+      ...attackOrder.map((name, idx) => {
+        const d = payload.debts.find(x => x.name === name);
+        if (!d) return [];
+        return [null,
+          idx === 0 ? "  #1  ← ATTACKING NOW" : `  #${idx + 1}`,
+          d.name,
+          d.balance,
+          d.rate,
+          d.min,
+          payoffDates[d.name] || "TBD",
+        ];
+      }),
+      [null, "  TOTAL", null,
+        payload.debts.reduce((a, d) => a + d.balance, 0),
+        null,
+        payload.total_minimums,
+      ],
+      [],
+      ["  KEY MILESTONES  —  DATES TO CELEBRATE"],
+      [null, "When", "Milestone  ·  What Happens Next"],
+      ...attackOrder.map((name, idx) => {
+        const date = payoffDates[name] || "TBD";
+        const nextName = attackOrder[idx + 1];
+        const d = payload.debts.find(x => x.name === name);
+        const cascade = nextName ? `$${d?.min || 0}/mo freed → cascades into ${nextName}` : "YOU ARE DEBT FREE 🎉";
+        return [null, `  ${date}`, `🎉  ${name}  PAID OFF  —  ${cascade}`];
+      }),
+      [],
+      ["  YOUR STRATEGY IN PLAIN ENGLISH"],
+      [null, planText.substring(0, 800).replace(/\n/g, " ")],
+      [],
+      ["  INTEREST SUMMARY"],
+      [null, "  Total debt at plan start:", `$${payload.total_debt.toLocaleString()}`],
+      [null, "  Total interest you'll pay with this plan:", `$${Math.round(totalInterest).toLocaleString()}`],
+      [null, "  Plan length:", `${months.length} months`],
+      [null, "  Debt-free date:", debtFreeMonth],
+      [],
+      [`Clearpath  ·  Projection based on information provided. Not financial advice.`],
+    ];
+    const ws2 = XLSX.utils.aoa_to_sheet(planRows);
+    ws2["!cols"] = [{ wch: 4 }, { wch: 28 }, { wch: 28 }, { wch: 16 }, { wch: 10 }, { wch: 16 }, { wch: 14 }];
+    XLSX.utils.book_append_sheet(wb, ws2, "My Plan");
+
+    // ── SHEET 3: Month-by-Month (24 months) ─────────────────────────────────
+    const mo24 = months.slice(0, 24);
+    const debtNames = payload.debts.map(d => d.name);
+    const monthLabels = mo24.map(m => m.label);
+    const years = mo24.map(m => m.calYear.toString());
+
+    const mbmRows = [
+      ["MONTH-BY-MONTH DETAIL  —  FIRST 24 MONTHS", ...Array(mo24.length).fill(null)],
+      ["Full income · expense line items · debt balances for every month  ·  Irregular costs shown only in the month they hit", ...Array(mo24.length).fill(null)],
+      [null, null, ...years],
+      [null, null, ...monthLabels],
+      [],
+      [null, "  INCOME", ...Array(mo24.length).fill(null)],
+      [null, "  Take-Home Income", ...mo24.map(m => m.income)],
+      [null, "  Windfalls This Month", ...mo24.map(m => m.windfall || null)],
+      [null, "  Total Income This Month", ...mo24.map(m => m.totalIncome)],
+      [],
+      [null, "  REGULAR MONTHLY EXPENSES", ...Array(mo24.length).fill(null)],
+      ...payload.expenses.regular.map(exp => [null, `  ${exp.name}`, ...Array(mo24.length).fill(exp.amount)]),
+      [null, "  Subtotal — Regular", ...mo24.map(m => m.regularTotal)],
+      [],
+      [null, "  IRREGULAR / SEASONAL EXPENSES", ...Array(mo24.length).fill(null)],
+      ...(payload.expenses.irregular || []).map(exp => {
+        const monthHits = {};
+        if (exp.mode === "specific_months") {
+          (exp.months || []).forEach(mn => { monthHits[mn] = exp.amount; });
+        }
+        return [null,
+          `  ${exp.name}  (${exp.mode === "spread" ? "spread" : (exp.months || []).map(mn => ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][mn-1]).join(", ")})`,
+          ...mo24.map(m => monthHits[m.calMonth] || null),
+        ];
+      }),
+      [null, "  Subtotal — Irregular", ...mo24.map(m => m.irregTotal || null)],
+      [],
+      [null, "  CASH FLOW SUMMARY", ...Array(mo24.length).fill(null)],
+      [null, "  Total Expenses", ...mo24.map(m => m.totalExpenses)],
+      [null, "  Net Surplus", ...mo24.map(m => m.netSurplus)],
+      [null, "  Total Debt Minimums", ...mo24.map(m => m.totalMins)],
+      [null, "  Extra Applied to Target Debt", ...mo24.map(m => m.extraApplied)],
+      [],
+      [null, "  PAYMENTS THIS MONTH  (What to Pay on Each Debt)", ...Array(mo24.length).fill(null)],
+      ...debtNames.flatMap(name => {
+        const d = payload.debts.find(x => x.name === name);
+        return [
+          [null, `    ${name}  —  Minimum`, ...mo24.map(m => m.balances[name] === 0 && !m.minPaidByDebt[name] ? "PAID OFF ✓" : Math.round(m.minPaidByDebt[name] || 0) || null)],
+          [null, `    ${name}  —  Extra`, ...mo24.map(m => m.balances[name] === 0 && !m.extraByDebt[name] ? "PAID OFF ✓" : (m.extraByDebt[name] > 0 ? Math.round(m.extraByDebt[name]) : null))],
+          [null, `    ${name}  —  TOTAL SEND`, ...mo24.map(m => {
+            const min = m.minPaidByDebt[name] || 0;
+            const ext = m.extraByDebt[name] || 0;
+            if (min === 0 && ext === 0 && m.balances[name] === 0) return "PAID OFF ✓";
+            return Math.round(min + ext) || null;
+          })],
+        ];
+      }),
+      [null, "  TOTAL PAYMENTS THIS MONTH", ...mo24.map(m => m.totalMins + m.extraApplied)],
+      [],
+      [null, "  DEBT BALANCES  (End of Month)", ...Array(mo24.length).fill(null)],
+      ...debtNames.map(name => [null, `  ${name}`, ...mo24.map(m => m.balances[name] > 0.5 ? Math.round(m.balances[name]) : "PAID OFF ✓")]),
+      [null, "  TOTAL REMAINING DEBT", ...mo24.map(m => m.totalRemaining)],
+      [null, `  📌  First 24 months shown.  Full plan = ${months.length} months  ·  Debt-free: ${debtFreeMonth}  ·  See Year-by-Year tab for complete timeline.`],
+    ];
+    const ws3 = XLSX.utils.aoa_to_sheet(mbmRows);
+    ws3["!cols"] = [{ wch: 4 }, { wch: 38 }, ...Array(mo24.length).fill({ wch: 13 })];
+    XLSX.utils.book_append_sheet(wb, ws3, "Month-by-Month");
+
+    // ── SHEET 4: Year-by-Year ───────────────────────────────────────────────
+    const byYear = {};
+    months.forEach(mo => {
+      const yr = mo.calYear;
+      if (!byYear[yr]) byYear[yr] = { months: [], notes: [] };
+      byYear[yr].months.push(mo);
+    });
+
+    // Detect payoff events per year
+    months.forEach((mo, idx) => {
+      debtNames.forEach(name => {
+        if (mo.balances[name] === 0 && (idx === 0 || months[idx-1]?.balances[name] > 0)) {
+          if (byYear[mo.calYear]) {
+            const d = payload.debts.find(x => x.name === name);
+            const next = attackOrder[attackOrder.indexOf(name) + 1];
+            byYear[mo.calYear].notes.push(`  ✓  ${name} PAID OFF — ${mo.label}. ${d ? `$${d.min}/mo freed` : ""} → ${next ? `cascades → ${next}` : "DEBT FREE!"}`);
+          }
+        }
+      });
+    });
+
+    const ybyRows = [
+      ["YEAR-BY-YEAR DEBT PAYOFF DETAIL"],
+      ["Per-loan breakdown every year  ·  Beg Balance · Min/Mo · Interest Paid · Min Principal · Extra Principal · Total Paid · End Balance"],
+    ];
+
+    Object.entries(byYear).forEach(([yr, { months: yMos, notes }]) => {
+      ybyRows.push([]);
+      ybyRows.push([null, `  ${yr}`]);
+      notes.forEach(n => ybyRows.push([null, n]));
+      ybyRows.push([null, "Loan", "Beg Balance", "Min/Mo", "Interest Paid", "Min Principal", "Extra Principal", "Total Paid", "End Balance"]);
+
+      debtNames.forEach(name => {
+        const d = payload.debts.find(x => x.name === name);
+        const begBalance = yMos[0]
+          ? (months[months.indexOf(yMos[0]) - 1]?.balances[name] ?? d.balance)
+          : d.balance;
+        const endBalance = yMos[yMos.length - 1]?.balances[name] ?? 0;
+        const interestPaid = yMos.reduce((a, m) => a + (m.interestByDebt[name] || 0), 0);
+        const minPrincipal = yMos.reduce((a, m) => a + (m.minPaidByDebt[name] || 0), 0) - interestPaid;
+        const extraPrincipal = yMos.reduce((a, m) => a + (m.extraByDebt[name] || 0), 0);
+        const totalPaid = yMos.reduce((a, m) => a + (m.minPaidByDebt[name] || 0) + (m.extraByDebt[name] || 0), 0);
+        const isPaidOff = endBalance < 0.01;
+        const isCurrent = attackOrder.find(n => {
+          const lastBal = months[months.length - 1]?.balances[n];
+          return lastBal === undefined || lastBal > 0;
+        }) === name;
+
+        const prefix = isPaidOff ? "✓ " : isCurrent ? "★ " : "  ";
+        const payoffNote = isPaidOff && payoffDates[name] ? `  ✓ ${payoffDates[name]}` : (isCurrent ? "  [SURPLUS TARGET]" : "");
+
+        ybyRows.push([null,
+          `${prefix}${name}${payoffNote}`,
+          begBalance > 0.01 ? Math.round(begBalance) : 0,
+          d.min,
+          Math.round(Math.max(0, interestPaid)),
+          Math.round(Math.max(0, minPrincipal)),
+          Math.round(extraPrincipal) || null,
+          Math.round(totalPaid),
+          isPaidOff ? "PAID OFF ✓" : Math.round(endBalance),
+        ]);
+      });
+
+      const yearTotalBeg = debtNames.reduce((a, name) => {
+        const d = payload.debts.find(x => x.name === name);
+        return a + (yMos[0] ? (months[months.indexOf(yMos[0]) - 1]?.balances[name] ?? d.balance) : d.balance);
+      }, 0);
+      const yearTotalEnd = debtNames.reduce((a, name) => a + (yMos[yMos.length - 1]?.balances[name] ?? 0), 0);
+      const yearInterest = yMos.reduce((a, m) => a + Object.values(m.interestByDebt).reduce((x, y) => x + y, 0), 0);
+      const yearMinPrin = yMos.reduce((a, m) => a + Object.values(m.minPaidByDebt).reduce((x, y) => x + y, 0), 0) - yearInterest;
+      const yearExtra = yMos.reduce((a, m) => a + Object.values(m.extraByDebt).reduce((x, y) => x + y, 0), 0);
+      const yearTotal = yMos.reduce((a, m) => a + m.totalMins + m.extraApplied, 0);
+
+      ybyRows.push([null, "  YEAR TOTALS",
+        Math.round(yearTotalBeg),
+        null,
+        Math.round(Math.max(0, yearInterest)),
+        Math.round(Math.max(0, yearMinPrin)),
+        Math.round(yearExtra) || null,
+        Math.round(yearTotal),
+        Math.round(yearTotalEnd),
+      ]);
+    });
+
+    ybyRows.push([]);
+    ybyRows.push([null, `  🎉  DEBT FREE: ${debtFreeMonth}   ·   Total Interest Paid: $${Math.round(totalInterest).toLocaleString()}   ·   Plan Length: ${months.length} months`]);
+
+    const ws4 = XLSX.utils.aoa_to_sheet(ybyRows);
+    ws4["!cols"] = [{ wch: 4 }, { wch: 36 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 14 }];
+    XLSX.utils.book_append_sheet(wb, ws4, "Year-by-Year");
+
+    // ── SHEET 5: CHANGELOG ──────────────────────────────────────────────────
+    const clRows = [
+      ["VERSION HISTORY  —  DEBT PAYOFF PLANNER"],
+      ["All changes to any file in this product bundle are tracked here"],
+      [null, "Version", "Date", "File(s)", "What Changed"],
+      [null, "v1.0", "2026-03-09", "Template, Prompt", "Initial release."],
+      [null, "v1.2", "2026-03-09", "Template", "Full rebuild: 5 tabs. START HERE · My Plan · Month-by-Month 24mo · Year-by-Year · Changelog."],
+      [null, "v2.0", genDate, "Template, Prompt", "Deficit detection, plan selection screen, full amortization engine."],
+    ];
+    const ws5 = XLSX.utils.aoa_to_sheet(clRows);
+    ws5["!cols"] = [{ wch: 4 }, { wch: 10 }, { wch: 14 }, { wch: 20 }, { wch: 60 }];
+    XLSX.utils.book_append_sheet(wb, ws5, "CHANGELOG");
 
     XLSX.writeFile(wb, `Clearpath_Plan_${payload.name}_${new Date().getFullYear()}.xlsx`);
+  }
+
+  // ── PLAN CHOICE SCREEN ───────────────────────────────────────────────────────
+  if (screen === "plan-choice") {
+    const payload = buildPayload();
+    const debtDef = computeDeficit(payload);
+
+    // Parse plan options from planText
+    const planAMatch = planText.match(/PLAN A[\s\S]*?(?=PLAN B|$)/i)?.[0] || "";
+    const planBMatch = planText.match(/PLAN B[\s\S]*?(?=PLAN C|$)/i)?.[0] || "";
+    const planCMatch = planText.match(/PLAN C[\s\S]*?(?=---|\n\n\*\*My rec|$)/i)?.[0] || "";
+
+    const plans = [
+      { id: "A", emoji: "📊", label: "Avalanche", sub: "Highest interest rate first", color: "#3b82f6", text: planAMatch, desc: "Mathematically saves the most money — attacks your costliest debt first." },
+      { id: "B", emoji: "🏆", label: "Snowball", sub: "Smallest balance first", color: "#22a89a", text: planBMatch, desc: "Fastest early wins — best for motivation and momentum." },
+      { id: "C", emoji: "⭐", label: "Optimized Hybrid", sub: "Custom to your situation", color: "#e8c87a", text: planCMatch, desc: "Tailored strategy based on your specific debts, timelines, and goals." },
+    ];
+
+    return (
+      <div style={{ minHeight: "100vh", background: "#07120f", fontFamily: "'Inter', sans-serif" }}>
+        <div style={{ background: "#0d2420", borderBottom: "1px solid #1e3a34", padding: "14px 24px", display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 18 }}>🧭</span>
+          <span style={{ fontSize: 16, fontWeight: 800, color: "#e8f5f3" }}>Clearpath</span>
+          <span style={{ fontSize: 12, color: "#8cb8b4", marginLeft: 8 }}>Your Three Plans</span>
+        </div>
+
+        <div style={{ maxWidth: 860, margin: "0 auto", padding: "32px 24px" }}>
+          <div style={{ marginBottom: 24 }}>
+            <h1 style={{ color: "#e8c87a", fontSize: 22, fontWeight: 800, margin: "0 0 6px" }}>Your Three Payoff Plans, {payload.name}</h1>
+            <p style={{ color: "#8cb8b4", fontSize: 14, margin: 0 }}>Review your options below, then choose the plan that's right for you. Your Excel file downloads after you choose.</p>
+          </div>
+
+          {debtDef.isDeficit && (
+            <div style={{ background: "#450a0a", border: "1px solid #ef4444", borderRadius: 12, padding: "16px 20px", marginBottom: 24 }}>
+              <p style={{ color: "#fecaca", fontWeight: 700, fontSize: 14, margin: "0 0 6px" }}>⚠️ Important: Your payments exceed your surplus</p>
+              <p style={{ color: "#fca5a5", fontSize: 13, margin: "0 0 8px", lineHeight: 1.6 }}>
+                Your minimum debt payments (${payload.total_minimums.toLocaleString()}/mo) are more than your available surplus after expenses. The plans below still show your options — but without changes to income or expenses, balances will continue to grow.
+              </p>
+              <p style={{ color: "#fca5a5", fontSize: 12, margin: 0 }}>
+                We recommend speaking with a nonprofit credit counselor. The NFCC offers free help: <strong>nfcc.org</strong> · 1-800-388-2227
+              </p>
+            </div>
+          )}
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, marginBottom: 32 }}>
+            {plans.map(plan => (
+              <div key={plan.id} onClick={() => setPlanChoice(plan.id)}
+                style={{ background: planChoice === plan.id ? "#0a1f1c" : "#0d2420", border: `2px solid ${planChoice === plan.id ? plan.color : "#1e3a34"}`, borderRadius: 14, padding: "20px 24px", cursor: "pointer", transition: "border-color 0.15s" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
+                  <div style={{ width: 44, height: 44, borderRadius: 12, background: planChoice === plan.id ? plan.color : "#1e3a34", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 22, transition: "background 0.15s" }}>
+                    {plan.emoji}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                      <h3 style={{ color: planChoice === plan.id ? plan.color : "#e8f5f3", fontSize: 16, fontWeight: 800, margin: 0 }}>Plan {plan.id} — {plan.label}</h3>
+                      <span style={{ fontSize: 11, color: "#8cb8b4", fontStyle: "italic" }}>{plan.sub}</span>
+                    </div>
+                    <p style={{ color: "#8cb8b4", fontSize: 13, margin: "0 0 10px", lineHeight: 1.5 }}>{plan.desc}</p>
+                    {plan.text && (
+                      <div style={{ background: "#061410", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#c9e8e5", lineHeight: 1.7, maxHeight: 120, overflowY: "auto", whiteSpace: "pre-wrap" }}>
+                        {plan.text.substring(0, 400)}...
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ flexShrink: 0, width: 24, height: 24, borderRadius: "50%", border: `2px solid ${planChoice === plan.id ? plan.color : "#1e3a34"}`, background: planChoice === plan.id ? plan.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    {planChoice === plan.id && <span style={{ color: "white", fontSize: 14 }}>✓</span>}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {planChoice && (
+            <div style={{ background: "#0a1f1c", border: "2px solid #22a89a", borderRadius: 14, padding: "24px 28px", textAlign: "center" }}>
+              <p style={{ color: "#22a89a", fontWeight: 700, fontSize: 16, margin: "0 0 8px" }}>
+                ✅ Plan {planChoice} selected
+              </p>
+              <p style={{ color: "#8cb8b4", fontSize: 13, margin: "0 0 20px" }}>
+                Ready to download your personalized Excel file and see your full roadmap.
+              </p>
+              <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
+                <button onClick={downloadExcel}
+                  style={{ background: "linear-gradient(135deg,#d97706,#f59e0b)", border: "none", borderRadius: 10, color: "white", fontSize: 16, fontWeight: 800, padding: "14px 32px", cursor: "pointer", letterSpacing: 0.3 }}>
+                  ⬇️ Download My Excel Plan
+                </button>
+                <button onClick={() => setScreen("plan")}
+                  style={{ background: "#0d2420", border: "1px solid #22a89a", borderRadius: 10, color: "#22a89a", fontSize: 14, fontWeight: 600, padding: "14px 24px", cursor: "pointer" }}>
+                  View Full Roadmap →
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
   }
 
   if (screen === "plan") {
@@ -900,9 +1406,15 @@ export default function App() {
             {" · "}
             <span style={{ color: "#22a89a", fontWeight: 600 }}>${(parseFloat(form.monthly_committed) || 0).toLocaleString()}/mo</span>
           </span>
-          <button onClick={downloadExcel} style={{ marginLeft: "auto", background: "linear-gradient(135deg,#1A7A6E,#22a89a)", border: "none", borderRadius: 8, color: "white", fontSize: 13, fontWeight: 700, padding: "9px 18px", cursor: "pointer" }}>
-            ⬇️ Download Excel Plan
-          </button>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+            <button onClick={() => setScreen("plan-choice")} style={{ background: "none", border: "1px solid #1e3a34", borderRadius: 8, color: "#8cb8b4", fontSize: 12, padding: "7px 14px", cursor: "pointer" }}>
+              ← Plan Options
+            </button>
+            <button onClick={downloadExcel}
+              style={{ background: "linear-gradient(135deg,#d97706,#f59e0b)", border: "none", borderRadius: 8, color: "white", fontSize: 14, fontWeight: 800, padding: "10px 22px", cursor: "pointer", boxShadow: "0 2px 12px rgba(245,158,11,0.4)" }}>
+              ⬇️ Download Excel Plan
+            </button>
+          </div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 0, maxWidth: 1100, margin: "0 auto", padding: 24 }}>
           <div style={{ paddingRight: 24 }}>
