@@ -39,19 +39,34 @@ async function callClaude(systemPrompt, messages, max_tokens = 2000) {
 
 // ── Section review prompts ────────────────────────────────────────────────────
 const REVIEW_PROMPTS = {
-  income: (data) => `You are Clearpath, a warm and encouraging debt payoff planning assistant. The user just filled out their income section.
+  income: (data) => {
+    // Do the math in JS — never ask Claude to calculate
+    const flags = (data.earners || []).filter(e => {
+      const takehome = parseFloat(e.takehome);
+      const gross = parseFloat(e.gross_annual);
+      return takehome > 0 && gross > 0 && takehome > gross / 12;
+    }).map(e => {
+      const takehome = parseFloat(e.takehome);
+      const gross = parseFloat(e.gross_annual);
+      const suggested = Math.round(takehome / 10) * 10 <= gross / 12
+        ? Math.round(takehome / 10)
+        : null;
+      return `${e.label}'s monthly take-home is entered as $${takehome.toLocaleString()}, but their gross annual salary is only $${gross.toLocaleString()}/year — monthly take-home can't exceed gross annual divided by 12. ${suggested ? `Did you mean $${suggested.toLocaleString()}?` : "Please double-check this figure."}`;
+    });
+
+    return `You are Clearpath, a warm and encouraging debt payoff planning assistant. The user just filled out their income section.
 
 INCOME DATA:
 ${JSON.stringify(data, null, 2)}
 
-CRITICAL RULE: Report numbers EXACTLY as entered. Never correct, interpret, or assume what the user "meant". If a number looks wrong, flag it — do not silently fix it.
+${flags.length > 0 ? `MATH ERRORS DETECTED (already verified — do not second-guess these):\n${flags.map(f => `- ${f}`).join("\n")}` : "MATH CHECK: All take-home figures are mathematically plausible. Do NOT flag any income numbers."}
 
 Your job:
 1. Warm 1-sentence acknowledgment using their name
 2. List each earner's take-home EXACTLY as entered, total monthly take-home, any bonuses or stock grants
-3. Flag impossible numbers using only this math check: monthly take-home > (gross_annual / 12) is mathematically impossible before taxes. If that's true for any earner, flag it simply like this — fill in their actual name and numbers: "[Name]'s monthly take-home is entered as $[X], but their gross annual salary is only $[Y]/year — monthly take-home can't be more than someone earns before taxes. Did you mean $[X/10]?" Do not show any intermediate calculations. Just state what was entered, why it's impossible, and suggest the most likely typo correction.
-4. Do NOT silently use a corrected number anywhere in your response. Use the number as entered.
-5. End with "Does this look right, or anything to adjust?"`,
+3. ${flags.length > 0 ? "Include the MATH ERRORS listed above word for word. Do not rephrase or recalculate them." : "Do NOT flag any income numbers — the math has already been verified as correct."}
+4. End with "Does this look right, or anything to adjust?"`;
+  },
 
   expenses_regular: (data) => `You are Clearpath, a warm and encouraging debt payoff planning assistant. The user just filled out their monthly expenses.
 
