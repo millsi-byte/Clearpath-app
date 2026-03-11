@@ -512,13 +512,13 @@ export default function App() {
   }
 
   // ── Review state management ──────────────────────────────────────────────────
-  async function startReview(sectionId, promptFn, data) {
-    setReviews(r => ({ ...r, [sectionId]: { status: "active", messages: [], loading: true, error: null } }));
+  async function startReview(sectionId, promptFn, data, flags = []) {
+    setReviews(r => ({ ...r, [sectionId]: { status: "active", messages: [], loading: true, error: null, flags } }));
     try {
       const reply = await callClaude(promptFn(data), [{ role: "user", content: "Please review my data." }]);
       setReviews(r => ({
         ...r,
-        [sectionId]: { status: "ready_to_confirm", messages: [{ role: "assistant", content: reply }], loading: false, error: null },
+        [sectionId]: { status: "ready_to_confirm", messages: [{ role: "assistant", content: reply }], loading: false, error: null, flags: r[sectionId].flags || [] },
       }));
     } catch (err) {
       setReviews(r => ({
@@ -984,8 +984,7 @@ export default function App() {
                 if (!form.earners[0]?.takehome) { alert("Please enter your monthly take-home pay."); return; }
                 const data = { name: form.earners[0]?.label || "there", earners: form.earners, bonuses: form.bonuses, other_income: form.other_income, extra_income: form.extra_income, stock_grants: form.stock_grants };
                 const incomeFlags = computeIncomeFlags(data);
-                setReviews(r => ({ ...r, income: { ...r.income, flags: incomeFlags } }));
-                startReview("income", REVIEW_PROMPTS.income, data);
+                startReview("income", REVIEW_PROMPTS.income, data, incomeFlags);
               }} style={btnP}>Review with Clearpath →</button>
             </div>
             {reviews.income.status !== "idle" && (reviews.income.messages.length > 0 || reviews.income.loading || reviews.income.error) && (
