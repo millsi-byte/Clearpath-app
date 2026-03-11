@@ -232,7 +232,9 @@ function renderMd(text) {
 // ── Review Panel ──────────────────────────────────────────────────────────────
 function ReviewPanel({ sectionId, review, onSendMessage, onConfirm, onEdit }) {
   const endRef = useRef(null);
+  const [showInput, setShowInput] = useState(false);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [review.messages]);
+  useEffect(() => { if (review.status === "active") setShowInput(false); }, [review.status]);
 
   return (
     <div style={{ marginTop: 20, borderRadius: 12, border: "1px solid #1e3a34", overflow: "hidden" }}>
@@ -276,17 +278,17 @@ function ReviewPanel({ sectionId, review, onSendMessage, onConfirm, onEdit }) {
 
       {review.status !== "confirmed" && (
         <div style={{ padding: 10, borderTop: "1px solid #1e3a34", background: "#0d2420" }}>
-          {review.status === "ready_to_confirm" ? (
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={() => onSendMessage("I'd like to make a change.")} style={{ flex: 1, background: "#0f3330", border: "1px solid #1e3a34", borderRadius: 7, color: "#8cb8b4", fontSize: 12, padding: "8px 12px", cursor: "pointer", textAlign: "left" }}>
-                ✏️ Make a change
-              </button>
-              <button onClick={onConfirm} style={{ flex: 1, background: "linear-gradient(135deg,#1A7A6E,#22a89a)", border: "none", borderRadius: 7, color: "white", fontSize: 12, fontWeight: 600, padding: "8px 12px", cursor: "pointer" }}>
+          {review.status === "ready_to_confirm" && !showInput ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <button onClick={onConfirm} style={{ background: "linear-gradient(135deg,#1A7A6E,#22a89a)", border: "none", borderRadius: 7, color: "white", fontSize: 13, fontWeight: 600, padding: "11px 12px", cursor: "pointer" }}>
                 ✅ Looks right, continue →
+              </button>
+              <button onClick={() => setShowInput(true)} style={{ background: "#0f3330", border: "1px solid #1e3a34", borderRadius: 7, color: "#8cb8b4", fontSize: 12, padding: "8px 12px", cursor: "pointer" }}>
+                ✏️ I need to correct something
               </button>
             </div>
           ) : !review.loading && (
-            <ReviewInput onSend={onSendMessage} loading={review.loading} />
+            <ReviewInput onSend={(msg) => { setShowInput(false); onSendMessage(msg); }} loading={review.loading} placeholder="Type your correction…" />
           )}
         </div>
       )}
@@ -294,7 +296,7 @@ function ReviewPanel({ sectionId, review, onSendMessage, onConfirm, onEdit }) {
   );
 }
 
-function ReviewInput({ onSend, loading }) {
+function ReviewInput({ onSend, loading, placeholder = "Reply to Clearpath…" }) {
   const [val, setVal] = useState("");
   const send = () => { if (val.trim() && !loading) { onSend(val); setVal(""); } };
   return (
@@ -302,7 +304,8 @@ function ReviewInput({ onSend, loading }) {
       <input
         value={val} onChange={e => setVal(e.target.value)}
         onKeyDown={e => e.key === "Enter" && !e.shiftKey && send()}
-        placeholder="Reply to Clearpath…"
+        placeholder={placeholder}
+        autoFocus
         style={{ flex: 1, background: "#0f1f1c", border: "1px solid #334155", borderRadius: 7, color: "#e8f0ee", fontSize: 12, padding: "8px 10px", outline: "none" }}
       />
       <button onClick={send} disabled={loading || !val.trim()} style={{ background: "linear-gradient(135deg,#1A7A6E,#22a89a)", border: "none", borderRadius: 7, padding: "8px 12px", cursor: loading || !val.trim() ? "not-allowed" : "pointer", color: "white", fontSize: 13 }}>→</button>
