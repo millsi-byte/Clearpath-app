@@ -310,7 +310,6 @@ function ReviewPanel({ review, onConfirm, onEdit, flags = [] }) {
             <span style={{ color: "#f87171", fontSize: 12 }}>⚠️ {review.error} — please try again.</span>
           </div>
         )}
-        <div ref={endRef} />
       </div>
 
       {review.status !== "confirmed" && !review.loading && (
@@ -1452,71 +1451,54 @@ export default function App() {
     const payload = buildPayload();
     const debtDef = computeDeficit(payload);
 
-    // Parse plan sections from Claude's text
     const planAMatch = planText.match(/PLAN A[\s\S]*?(?=PLAN B|$)/i)?.[0] || "";
     const planBMatch = planText.match(/PLAN B[\s\S]*?(?=PLAN C|$)/i)?.[0] || "";
     const planCMatch = planText.match(/PLAN C[\s\S]*?(?=---|\n\n\*\*My rec|$)/i)?.[0] || "";
     const recMatch = planText.match(/\*\*My recommendation[:\*]*\*?\*?[:\s]*([\s\S]*?)(?:\n\n|$)/i)?.[1]?.trim() || "";
 
-    // Parse key stats out of each plan block (debt-free date, total interest, first payoff)
     function parseStats(txt) {
       const dfMatch = txt.match(/Debt.free[:\s]+\*{0,2}([A-Za-z]+ \d{4})\*{0,2}/i) || txt.match(/([A-Za-z]+ \d{4})/);
       const intMatch = txt.match(/Total interest[:\s]+\*{0,2}\$([\d,]+)\*{0,2}/i);
       const saveMatch = txt.match(/Saves[:\s]+\*{0,2}\$([\d,]+)\*{0,2}/i);
       const firstPayoff = txt.match(/First payoff[:\s]+\*{0,2}([^–\n*]+)\*{0,2}[–—]/i);
-      const orderMatch = txt.match(/Attack order[:\s]+([^\n]+)/i);
       return {
         debtFree: dfMatch?.[1] || "—",
-        interest: intMatch?.[1] || "—",
-        saves: saveMatch?.[1] || "—",
+        interest: intMatch?.[1] ? "$" + intMatch[1] : "—",
+        saves: saveMatch?.[1] ? "Saves $" + saveMatch[1] : "—",
         firstPayoff: firstPayoff?.[1]?.trim() || "—",
-        attackOrder: orderMatch?.[1]?.trim() || "",
       };
     }
 
-    const plans = [
-      { id: "A", emoji: "📊", label: "Avalanche", sub: "Highest interest rate first", color: "#3b82f6", text: planAMatch, stats: parseStats(planAMatch) },
-      { id: "B", emoji: "🏆", label: "Snowball", sub: "Smallest balance first", color: "#22a89a", text: planBMatch, stats: parseStats(planBMatch) },
-      { id: "C", emoji: "⭐", label: "Optimized Hybrid", sub: "Custom strategy", color: "#e8c87a", text: planCMatch, stats: parseStats(planCMatch) },
-    ];
+    function handleStartOver() {
+      if (!window.confirm("Start over? This will clear your current interview so you can enter fresh numbers. Your saved plans won't be affected.")) return;
+      setForm({
+        name: "", earners: [{ label: "", gross_annual: "", takehome: "" }],
+        bonuses: [{ type: "none", amount: "", percent: "", month: "December" }],
+        other_income: "", extra_income: [], stock_grants: [],
+        rent: "", mortgage: "", property_tax: "", hoa: "", renters_insurance: "",
+        electric_gas: "", water: "", internet: "",
+        streaming_video: "", streaming_music: "", other_subscriptions: "",
+        cell_phone: "", car_payment: "", car_insurance_monthly: "", gas: "", parking_tolls: "",
+        groceries: "", dining_out: "",
+        health_insurance: "", life_insurance: "", dental_vision: "", medical_copays: "",
+        childcare: "", child_support_paid: "", pets: "", personal_care: "", gym: "",
+        savings_transfers: "", misc_buffer: "", other_monthly: "",
+        custom_monthly_expenses: [], irregular_expenses: [], extra_annual: [],
+        debts: [], planned_debts: [],
+        priority: "balanced", emergency_fund_current: "", emergency_fund_target: "",
+        open_to_refi: false, emotional_priority: "",
+        upcoming_expenses: "", upcoming_expenses_list: [], monthly_committed: "",
+      });
+      setReviews({ income: { status: "idle", messages: [], loading: false, error: null }, expenses_regular: { status: "idle", messages: [], loading: false, error: null }, expenses_irregular: { status: "idle", messages: [], loading: false, error: null }, debts: { status: "idle", messages: [], loading: false, error: null }, goals: { status: "idle", messages: [], loading: false, error: null } });
+      setPlanText(""); setPlanChoice(null); setPlanError(""); setQaMessages([]); setStep(1);
+      setScreen("interview");
+    }
 
-    const actionBox = (
-      <div style={{
-        background: planChoice ? "#0a1f1c" : "#0d2420",
-        border: `2px solid ${planChoice ? "#22a89a" : "#1e3a34"}`,
-        borderRadius: 14, padding: "20px 24px",
-        transition: "all 0.3s",
-      }}>
-        {planChoice ? (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 14 }}>
-            <div>
-              <p style={{ color: "#22a89a", fontWeight: 800, fontSize: 16, margin: "0 0 4px" }}>
-                ✅ Plan {planChoice} — {plans.find(p=>p.id===planChoice)?.label} selected
-              </p>
-              <p style={{ color: "#8cb8b4", fontSize: 13, margin: 0 }}>Download your personalized Excel file or view the full interactive roadmap.</p>
-            </div>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button onClick={downloadExcel} style={{
-                background: "linear-gradient(135deg,#d97706,#f59e0b)", border: "none", borderRadius: 10,
-                color: "white", fontSize: 15, fontWeight: 900, padding: "13px 28px", cursor: "pointer",
-                boxShadow: "0 4px 16px rgba(245,158,11,0.45)",
-              }}>⬇️ Download Excel Plan</button>
-              <button onClick={() => setScreen("plan")} style={{
-                background: "#0d2420", border: "2px solid #22a89a", borderRadius: 10,
-                color: "#22a89a", fontSize: 14, fontWeight: 700, padding: "13px 22px", cursor: "pointer",
-              }}>View Full Roadmap →</button>
-            </div>
-          </div>
-        ) : (
-          <div style={{ textAlign: "center" }}>
-            <p style={{ color: "#f59e0b", fontWeight: 800, fontSize: 15, margin: "0 0 4px" }}>
-              👇 Click "Select Plan" below any option to unlock your download
-            </p>
-            <p style={{ color: "#475569", fontSize: 12, margin: 0 }}>Your Excel button appears here the moment you choose.</p>
-          </div>
-        )}
-      </div>
-    );
+    const plans = [
+      { id: "A", emoji: "📊", label: "Avalanche", sub: "Highest interest rate first — saves the most total interest", color: "#3b82f6", text: planAMatch, stats: parseStats(planAMatch) },
+      { id: "B", emoji: "🏆", label: "Snowball", sub: "Smallest balance first — fastest early wins and motivation", color: "#22a89a", text: planBMatch, stats: parseStats(planBMatch) },
+      { id: "C", emoji: "⭐", label: "Optimized Hybrid", sub: "Custom strategy built around your specific situation", color: "#e8c87a", text: planCMatch, stats: parseStats(planCMatch) },
+    ];
 
     return (
       <div style={{ minHeight: "100vh", background: "#07120f", fontFamily: "'Inter', sans-serif" }}>
@@ -1524,16 +1506,22 @@ export default function App() {
         <div style={{ background: "#0d2420", borderBottom: "1px solid #1e3a34", padding: "14px 24px", display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontSize: 18 }}>🧭</span>
           <span style={{ fontSize: 16, fontWeight: 800, color: "#e8f5f3" }}>Clearpath</span>
-          <button onClick={() => setScreen("dashboard")} style={{ marginLeft: "auto", background: "none", border: "1px solid #1e3a34", borderRadius: 8, color: "#475569", fontSize: 12, padding: "6px 12px", cursor: "pointer" }}>← My Plans</button>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+            <button onClick={() => setScreen("dashboard")} style={{ background: "none", border: "1px solid #1e3a34", borderRadius: 8, color: "#475569", fontSize: 12, padding: "6px 12px", cursor: "pointer" }}>← My Plans</button>
+            <button onClick={handleStartOver} style={{ background: "none", border: "1px solid #f59e0b", borderRadius: 8, color: "#f59e0b", fontSize: 12, fontWeight: 600, padding: "6px 14px", cursor: "pointer" }}>🔄 Start Over</button>
+          </div>
         </div>
 
-        <div style={{ maxWidth: 920, margin: "0 auto", padding: "32px 24px 60px" }}>
+        <div style={{ maxWidth: 960, margin: "0 auto", padding: "32px 24px 80px" }}>
           <div style={{ textAlign: "center", marginBottom: 28 }}>
-            <h1 style={{ color: "#e8c87a", fontSize: 26, fontWeight: 900, margin: "0 0 8px" }}>
-              🎉 Your Three Payoff Plans, {payload.name}!
+            <h1 style={{ color: "#e8c87a", fontSize: 26, fontWeight: 900, margin: "0 0 10px" }}>
+              🎉 Your Three Payoff Plans{payload.name ? `, ${payload.name}` : ""}!
             </h1>
+            <p style={{ color: "#8cb8b4", fontSize: 14, margin: "0 0 10px" }}>
+              Each plan attacks your debt in a different order. Download whichever one fits best — or all three.
+            </p>
             {recMatch && (
-              <div style={{ display: "inline-block", background: "#0a1f1c", border: "1px solid #22a89a", borderRadius: 10, padding: "8px 18px", marginTop: 8 }}>
+              <div style={{ display: "inline-block", background: "#0a1f1c", border: "1px solid #22a89a", borderRadius: 10, padding: "8px 18px" }}>
                 <span style={{ color: "#22a89a", fontWeight: 700, fontSize: 13 }}>💡 Clearpath recommends: </span>
                 <span style={{ color: "#c9e8e5", fontSize: 13 }}>{recMatch}</span>
               </div>
@@ -1541,120 +1529,119 @@ export default function App() {
           </div>
 
           {debtDef.isDeficit && (
-            <div style={{ background: "#450a0a", border: "1px solid #ef4444", borderRadius: 12, padding: "14px 18px", marginBottom: 20 }}>
-              <p style={{ color: "#fecaca", fontWeight: 700, fontSize: 13, margin: "0 0 4px" }}>⚠️ Your minimum payments exceed your surplus</p>
+            <div style={{ background: "#450a0a", border: "1px solid #ef4444", borderRadius: 12, padding: "14px 18px", marginBottom: 24 }}>
+              <p style={{ color: "#fecaca", fontWeight: 700, fontSize: 13, margin: "0 0 4px" }}>⚠️ Your minimum payments exceed your current surplus</p>
               <p style={{ color: "#fca5a5", fontSize: 12, margin: 0, lineHeight: 1.5 }}>
-                Minimums (${payload.total_minimums.toLocaleString()}/mo) &gt; available surplus. Plans below still generated — but without income/expense changes, balances will grow.
-                Free help: <strong>nfcc.org</strong> · 1-800-388-2227
+                Plans are still generated so you can see the full picture. Free help available at <strong>nfcc.org</strong> · 1-800-388-2227
               </p>
             </div>
           )}
 
-          {/* ACTION BOX — at top, sticky */}
-          <div style={{ position: "sticky", top: 10, zIndex: 20, marginBottom: 24 }}>
-            {actionBox}
-          </div>
-
-          {/* Comparison table — all 3 plans side by side */}
-          <div style={{ background: "#0d2420", border: "1px solid #1e3a34", borderRadius: 14, overflow: "hidden", marginBottom: 24 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "160px 1fr 1fr 1fr" }}>
-              {/* Header row */}
-              <div style={{ background: "#061410", padding: "14px 16px", borderRight: "1px solid #1e3a34", borderBottom: "1px solid #1e3a34" }} />
-              {plans.map(plan => (
-                <div key={plan.id} style={{
-                  background: planChoice === plan.id ? "#0a1f1c" : "#061410",
-                  padding: "14px 16px", borderRight: "1px solid #1e3a34", borderBottom: "1px solid #1e3a34",
-                  textAlign: "center", transition: "background 0.15s",
-                }}>
-                  <div style={{ fontSize: 20, marginBottom: 4 }}>{plan.emoji}</div>
-                  <div style={{ color: planChoice === plan.id ? plan.color : "#e8f5f3", fontWeight: 800, fontSize: 14 }}>Plan {plan.id} — {plan.label}</div>
-                  <div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>{plan.sub}</div>
-                </div>
-              ))}
-
-              {/* Stat rows */}
-              {[
-                { label: "🗓️ Debt-Free Date", key: "debtFree" },
-                { label: "💸 Total Interest", key: "interest", prefix: "$" },
-                { label: "💰 vs. Minimums Only", key: "saves", prefix: "Saves $" },
-                { label: "🎉 First Payoff", key: "firstPayoff" },
-              ].map(row => (
-                <>
-                  <div key={row.label+"-lbl"} style={{ background: "#0d2420", padding: "12px 16px", borderRight: "1px solid #1e3a34", borderBottom: "1px solid #1e3a34", color: "#8cb8b4", fontSize: 12, fontWeight: 600 }}>{row.label}</div>
-                  {plans.map(plan => (
-                    <div key={plan.id+row.key} style={{
-                      background: planChoice === plan.id ? "#0a1f1c" : "#0d2420",
-                      padding: "12px 16px", borderRight: "1px solid #1e3a34", borderBottom: "1px solid #1e3a34",
-                      textAlign: "center", color: "#e8f5f3", fontSize: 13, fontWeight: 600, transition: "background 0.15s",
-                    }}>
-                      {plan.stats[row.key] !== "—" ? (row.prefix || "") + plan.stats[row.key] : <span style={{ color: "#2d4a44" }}>—</span>}
-                    </div>
-                  ))}
-                </>
-              ))}
-
-              {/* Select buttons row */}
-              <div style={{ background: "#061410", padding: "14px 16px", borderRight: "1px solid #1e3a34" }} />
-              {plans.map(plan => (
-                <div key={plan.id+"-btn"} style={{ background: planChoice === plan.id ? "#0a1f1c" : "#061410", padding: "12px 16px", borderRight: "1px solid #1e3a34", transition: "background 0.15s" }}>
-                  <button
-                    onClick={() => setPlanChoice(plan.id)}
-                    style={{
-                      width: "100%", padding: "10px 0", borderRadius: 8, border: "none", cursor: "pointer",
-                      background: planChoice === plan.id ? plan.color : "#1e3a34",
-                      color: planChoice === plan.id ? "white" : "#8cb8b4",
-                      fontSize: 12, fontWeight: 800, transition: "all 0.15s",
-                    }}>
-                    {planChoice === plan.id ? "✓ Selected" : `Select Plan ${plan.id}`}
-                  </button>
+          {/* Comparison table */}
+          <div style={{ background: "#0d2420", border: "1px solid #1e3a34", borderRadius: 14, overflow: "hidden", marginBottom: 32 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr 1fr", borderBottom: "1px solid #1e3a34" }}>
+              <div style={{ background: "#061410", padding: "14px 16px" }} />
+              {plans.map(p => (
+                <div key={p.id} style={{ background: "#061410", padding: "14px 16px", borderLeft: "1px solid #1e3a34", textAlign: "center" }}>
+                  <div style={{ fontSize: 18, marginBottom: 4 }}>{p.emoji}</div>
+                  <div style={{ color: "#e8f5f3", fontWeight: 800, fontSize: 13 }}>Plan {p.id} — {p.label}</div>
+                  <div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>{p.sub}</div>
                 </div>
               ))}
             </div>
+            {[
+              { label: "🗓️ Debt-Free", key: "debtFree" },
+              { label: "💸 Total Interest", key: "interest" },
+              { label: "💰 vs. Minimums", key: "saves" },
+              { label: "🎉 First Payoff", key: "firstPayoff" },
+            ].map((row, ri) => (
+              <div key={row.label} style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr 1fr", borderBottom: ri < 3 ? "1px solid #1e3a34" : "none" }}>
+                <div style={{ background: "#0a1812", padding: "11px 16px", color: "#8cb8b4", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center" }}>{row.label}</div>
+                {plans.map(p => (
+                  <div key={p.id} style={{ padding: "11px 16px", borderLeft: "1px solid #1e3a34", textAlign: "center", color: "#e8f5f3", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    {p.stats[row.key] !== "—" ? p.stats[row.key] : <span style={{ color: "#2d4a44" }}>—</span>}
+                  </div>
+                ))}
+              </div>
+            ))}
           </div>
 
-          {/* Full plan detail — stacked, no scroll */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {plans.map(plan => {
-              const selected = planChoice === plan.id;
-              return (
-                <div key={plan.id} style={{
-                  background: selected ? "#0a1f1c" : "#0d2420",
-                  border: `2px solid ${selected ? plan.color : "#1e3a34"}`,
-                  borderRadius: 14, overflow: "hidden", transition: "border-color 0.15s",
-                }}>
-                  <div style={{ padding: "14px 20px", borderBottom: "1px solid #1e3a34", display: "flex", alignItems: "center", gap: 12 }}>
-                    <span style={{ fontSize: 20 }}>{plan.emoji}</span>
-                    <div>
-                      <span style={{ color: selected ? plan.color : "#e8f5f3", fontWeight: 800, fontSize: 15 }}>Plan {plan.id} — {plan.label}</span>
-                      <span style={{ color: "#475569", fontSize: 12, marginLeft: 10 }}>{plan.sub}</span>
+          {/* Full plan cards — each with its own download */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+            {plans.map(plan => (
+              <div key={plan.id} style={{ background: "#0d2420", border: `1px solid #1e3a34`, borderRadius: 14, overflow: "hidden" }}>
+                {/* Card header with download button */}
+                <div style={{ padding: "16px 20px", borderBottom: "1px solid #1e3a34", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 22 }}>{plan.emoji}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ color: plan.color, fontWeight: 800, fontSize: 16 }}>Plan {plan.id} — {plan.label}</div>
+                    <div style={{ color: "#475569", fontSize: 12 }}>{plan.sub}</div>
+                  </div>
+                  {/* Stats pills */}
+                  {plan.stats.debtFree !== "—" && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ background: "#061410", border: "1px solid #1e3a34", borderRadius: 20, padding: "4px 12px", fontSize: 12, color: "#c9e8e5" }}>
+                        🗓️ Free: <strong>{plan.stats.debtFree}</strong>
+                      </span>
+                      {plan.stats.interest !== "—" && (
+                        <span style={{ background: "#061410", border: "1px solid #1e3a34", borderRadius: 20, padding: "4px 12px", fontSize: 12, color: "#c9e8e5" }}>
+                          💸 {plan.stats.interest}
+                        </span>
+                      )}
                     </div>
-                    {selected && <span style={{ marginLeft: "auto", background: plan.color, borderRadius: 20, padding: "3px 12px", fontSize: 12, fontWeight: 700, color: "white" }}>✓ Selected</span>}
-                  </div>
-                  <div style={{ padding: "16px 20px" }}>
-                    {plan.text ? (
-                      <div style={{ fontSize: 13, color: "#c9e8e5", lineHeight: 1.8, whiteSpace: "pre-wrap" }}>{plan.text.trim()}</div>
-                    ) : (
-                      <p style={{ color: "#475569", fontSize: 13, fontStyle: "italic", margin: 0 }}>Full details in your roadmap after selecting.</p>
-                    )}
-                  </div>
-                  <div style={{ padding: "0 20px 16px" }}>
-                    <button onClick={() => setPlanChoice(plan.id)} style={{
-                      width: "100%", padding: "12px 0", borderRadius: 9, border: "none", cursor: "pointer",
-                      background: selected ? plan.color : "#1e3a34",
-                      color: selected ? "white" : "#8cb8b4",
-                      fontSize: 13, fontWeight: 800, transition: "all 0.15s",
+                  )}
+                  <button
+                    onClick={() => { setPlanChoice(plan.id); setTimeout(downloadExcel, 50); }}
+                    style={{
+                      background: "linear-gradient(135deg,#d97706,#f59e0b)", border: "none", borderRadius: 9,
+                      color: "white", fontSize: 13, fontWeight: 800, padding: "11px 20px", cursor: "pointer",
+                      whiteSpace: "nowrap", boxShadow: "0 3px 12px rgba(245,158,11,0.35)",
                     }}>
-                      {selected ? `✓ Plan ${plan.id} Selected` : `Select Plan ${plan.id} — ${plan.label}`}
-                    </button>
-                  </div>
+                    ⬇️ Download Plan {plan.id}
+                  </button>
                 </div>
-              );
-            })}
+                {/* Plan detail */}
+                <div style={{ padding: "16px 20px" }}>
+                  {plan.text ? (
+                    <div style={{ fontSize: 13, color: "#c9e8e5", lineHeight: 1.8, whiteSpace: "pre-wrap" }}>{plan.text.trim()}</div>
+                  ) : (
+                    <p style={{ color: "#475569", fontSize: 13, fontStyle: "italic", margin: 0 }}>Plan details loading…</p>
+                  )}
+                </div>
+                {/* Footer download */}
+                <div style={{ padding: "12px 20px", borderTop: "1px solid #1e3a34", background: "#061410" }}>
+                  <button
+                    onClick={() => { setPlanChoice(plan.id); setTimeout(downloadExcel, 50); }}
+                    style={{
+                      width: "100%", padding: "12px 0", borderRadius: 9, border: "none", cursor: "pointer",
+                      background: "linear-gradient(135deg,#d97706,#f59e0b)", color: "white",
+                      fontSize: 14, fontWeight: 800, boxShadow: "0 3px 12px rgba(245,158,11,0.3)",
+                    }}>
+                    ⬇️ Download Plan {plan.id} — {plan.label} Excel File
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* View full roadmap link */}
+          <div style={{ textAlign: "center", marginTop: 32 }}>
+            <p style={{ color: "#475569", fontSize: 12, margin: "0 0 10px" }}>
+              Want the interactive roadmap with the Q&A assistant?
+            </p>
+            {planChoice ? (
+              <button onClick={() => setScreen("plan")} style={{ background: "none", border: "1px solid #1e3a34", borderRadius: 8, color: "#8cb8b4", fontSize: 13, padding: "9px 20px", cursor: "pointer" }}>
+                View Full Roadmap for Plan {planChoice} →
+              </button>
+            ) : (
+              <p style={{ color: "#2d4a44", fontSize: 12, margin: 0 }}>Download any plan above to enable the full roadmap view.</p>
+            )}
           </div>
         </div>
       </div>
     );
   }
+
 
 
   if (screen === "plan") {
