@@ -37,34 +37,36 @@ async function callClaude(systemPrompt, messages, max_tokens = 2000) {
   return data.text || "";
 }
 
-// ── Section review prompts ────────────────────────────────────────────────────
+// ── Income validation flags (JS math — never delegated to Claude) ─────────────
+function computeIncomeFlags(data) {
+  return (data.earners || []).filter(e => {
+    const takehome = parseFloat(e.takehome);
+    const gross = parseFloat(e.gross_annual);
+    return takehome > 0 && gross > 0 && takehome > gross / 12;
+  }).map(e => {
+    const takehome = parseFloat(e.takehome);
+    const gross = parseFloat(e.gross_annual);
+    const suggested = Math.round(takehome / 10);
+    return `${e.label}'s monthly take-home is entered as $${takehome.toLocaleString()}, but their gross annual salary is only $${gross.toLocaleString()}/year — monthly take-home can't be more than someone earns before taxes.${suggested * 12 <= gross ? ` Did you mean $${suggested.toLocaleString()}?` : " Please double-check this figure."}`;
+  });
+}
+
 const REVIEW_PROMPTS = {
   income: (data) => {
-    // Do the math in JS — never ask Claude to calculate
-    const flags = (data.earners || []).filter(e => {
-      const takehome = parseFloat(e.takehome);
-      const gross = parseFloat(e.gross_annual);
-      return takehome > 0 && gross > 0 && takehome > gross / 12;
-    }).map(e => {
-      const takehome = parseFloat(e.takehome);
-      const gross = parseFloat(e.gross_annual);
-      const suggested = Math.round(takehome / 10) * 10 <= gross / 12
-        ? Math.round(takehome / 10)
-        : null;
-      return `${e.label}'s monthly take-home is entered as $${takehome.toLocaleString()}, but their gross annual salary is only $${gross.toLocaleString()}/year — monthly take-home can't exceed gross annual divided by 12. ${suggested ? `Did you mean $${suggested.toLocaleString()}?` : "Please double-check this figure."}`;
-    });
-
+    const flags = computeIncomeFlags(data);
     return `You are Clearpath, a warm and encouraging debt payoff planning assistant. The user just filled out their income section.
 
 INCOME DATA:
 ${JSON.stringify(data, null, 2)}
 
-${flags.length > 0 ? `MATH ERRORS DETECTED (already verified — do not second-guess these):\n${flags.map(f => `- ${f}`).join("\n")}` : "MATH CHECK: All take-home figures are mathematically plausible. Do NOT flag any income numbers."}
+${flags.length > 0
+  ? `MATH ERRORS DETECTED (pre-verified by the app — do not recalculate or rephrase):\n${flags.map(f => `- ${f}`).join("\n")}`
+  : "MATH CHECK PASSED: All take-home figures are plausible. Do NOT flag any income numbers."}
 
 Your job:
 1. Warm 1-sentence acknowledgment using their name
 2. List each earner's take-home EXACTLY as entered, total monthly take-home, any bonuses or stock grants
-3. ${flags.length > 0 ? "Include the MATH ERRORS listed above word for word. Do not rephrase or recalculate them." : "Do NOT flag any income numbers — the math has already been verified as correct."}
+3. ${flags.length > 0 ? "Reproduce the MATH ERRORS above verbatim. Do not rephrase them." : "Do NOT flag or question any income numbers."}
 4. End with "Does this look right, or anything to adjust?"`;
   },
 
@@ -247,16 +249,36 @@ function renderMd(text) {
 }
 
 // ── Review Panel ──────────────────────────────────────────────────────────────
-function ReviewPanel({ review, onConfirm, onEdit }) {
+function ReviewPanel({ review, onConfirm, onEdit, flags = [] }) {
   const endRef = useRef(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [review.messages]);
 
+  const hasFlags = flags.length > 0;
+
   return (
-    <div style={{ marginTop: 20, borderRadius: 12, border: "1px solid #1e3a34", overflow: "hidden" }}>
-      <div style={{ background: "#0d2420", padding: "10px 16px", display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: 14 }}>🤖</span>
-        <span style={{ fontSize: 12, fontWeight: 700, color: "#22a89a" }}>Clearpath Review</span>
+    <div style={{ marginTop: 20, borderRadius: 12, border: `1px solid ${hasFlags ? "#7f1d1d" : "#1e3a34"}`, overflow: "hidden" }}>
+      <div style={{ background: hasFlags ? "#450a0a" : "#0d2420", padding: "10px 16px", display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 14 }}>{hasFlags ? "🚨" : "🤖"}</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: hasFlags ? "#fca5a5" : "#22a89a" }}>
+          {hasFlags ? "Error — Please Correct Before Continuing" : "Clearpath Review"}
+        </span>
       </div>
+
+      {hasFlags && (
+        <div style={{ background: "#3b0a0a", borderBottom: "1px solid #7f1d1d", padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+          {flags.map((f, i) => (
+            <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+              <span style={{ color: "#f87171", fontSize: 16, flexShrink: 0, marginTop: 1 }}>⚠️</span>
+              <span style={{ color: "#fecaca", fontSize: 13, lineHeight: 1.6, fontWeight: 600 }}>{f}</span>
+            </div>
+          ))}
+          <div style={{ marginTop: 4, padding: "10px 12px", background: "#450a0a", borderRadius: 8, border: "1px solid #7f1d1d" }}>
+            <p style={{ color: "#fca5a5", fontSize: 12, margin: 0, lineHeight: 1.6 }}>
+              👇 <strong>To fix this:</strong> Click <em>"Go back and correct my answers"</em> below, update the highlighted field, then click <em>"Review with Clearpath"</em> again.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div style={{ background: "#0a1f1c", padding: 14, display: "flex", flexDirection: "column", gap: 10, maxHeight: 320, overflowY: "auto" }}>
         {review.messages.map((m, i) => (
@@ -285,12 +307,14 @@ function ReviewPanel({ review, onConfirm, onEdit }) {
       </div>
 
       {review.status !== "confirmed" && !review.loading && (
-        <div style={{ padding: 10, borderTop: "1px solid #1e3a34", background: "#0d2420", display: "flex", flexDirection: "column", gap: 8 }}>
-          <button onClick={onConfirm} style={{ background: "linear-gradient(135deg,#1A7A6E,#22a89a)", border: "none", borderRadius: 7, color: "white", fontSize: 13, fontWeight: 600, padding: "11px 12px", cursor: "pointer" }}>
-            ✅ Looks right, continue →
-          </button>
-          <button onClick={onEdit} style={{ background: "#0f3330", border: "1px solid #1e3a34", borderRadius: 7, color: "#8cb8b4", fontSize: 12, padding: "8px 12px", cursor: "pointer" }}>
-            ✏️ Go back and correct my answers
+        <div style={{ padding: 10, borderTop: `1px solid ${hasFlags ? "#7f1d1d" : "#1e3a34"}`, background: hasFlags ? "#450a0a" : "#0d2420", display: "flex", flexDirection: "column", gap: 8 }}>
+          {!hasFlags && (
+            <button onClick={onConfirm} style={{ background: "linear-gradient(135deg,#1A7A6E,#22a89a)", border: "none", borderRadius: 7, color: "white", fontSize: 13, fontWeight: 600, padding: "11px 12px", cursor: "pointer" }}>
+              ✅ Looks right, continue →
+            </button>
+          )}
+          <button onClick={onEdit} style={{ background: hasFlags ? "#7f1d1d" : "#0f3330", border: `1px solid ${hasFlags ? "#ef4444" : "#1e3a34"}`, borderRadius: 7, color: hasFlags ? "#fecaca" : "#8cb8b4", fontSize: 12, fontWeight: hasFlags ? 600 : 400, padding: "8px 12px", cursor: "pointer" }}>
+            {hasFlags ? "✏️ Go back and correct my answers" : "✏️ Go back and correct my answers"}
           </button>
         </div>
       )}
@@ -959,11 +983,14 @@ export default function App() {
                 if (!form.earners[0]?.label?.trim()) { alert("Please enter your name."); return; }
                 if (!form.earners[0]?.takehome) { alert("Please enter your monthly take-home pay."); return; }
                 const data = { name: form.earners[0]?.label || "there", earners: form.earners, bonuses: form.bonuses, other_income: form.other_income, extra_income: form.extra_income, stock_grants: form.stock_grants };
+                const incomeFlags = computeIncomeFlags(data);
+                setReviews(r => ({ ...r, income: { ...r.income, flags: incomeFlags } }));
                 startReview("income", REVIEW_PROMPTS.income, data);
               }} style={btnP}>Review with Clearpath →</button>
             </div>
             {reviews.income.status !== "idle" && (reviews.income.messages.length > 0 || reviews.income.loading || reviews.income.error) && (
               <ReviewPanel review={reviews.income}
+                flags={reviews.income.flags || []}
                 onConfirm={() => confirmReview("income")}
                 onEdit={() => editSection("income", 1)} />
             )}
