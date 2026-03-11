@@ -720,8 +720,8 @@ export default function App() {
             <p style={{ color: "#22a89a", fontSize: 13, margin: 0, letterSpacing: 1, textTransform: "uppercase", fontWeight: 600 }}>Debt Payoff Planner</p>
           </div>
           <div style={{ background: "#0d2420", borderRadius: 16, border: "1px solid #1e3a34", padding: 32 }}>
-            <h2 style={{ color: "#e8f5f3", fontSize: 20, fontWeight: 700, margin: "0 0 8px" }}>Welcome back</h2>
-            <p style={{ color: "#8cb8b4", fontSize: 14, margin: "0 0 24px", lineHeight: 1.6 }}>Enter the access code from your confirmation email to get started.</p>
+            <h2 style={{ color: "#e8f5f3", fontSize: 20, fontWeight: 700, margin: "0 0 8px" }}>Let's get started</h2>
+            <p style={{ color: "#8cb8b4", fontSize: 14, margin: "0 0 24px", lineHeight: 1.6 }}>Enter the access code from your confirmation email to begin.</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <input
                 value={codeInput} onChange={e => setCodeInput(e.target.value)}
@@ -955,8 +955,7 @@ export default function App() {
               <button onClick={addExtraIncome} style={{ ...btnS, fontSize: 12 }}>+ Add income source</button>
             </div>
 
-            <div style={{ marginTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <button onClick={() => { setStep(0); setReviews(r => ({ ...r, income: { status: "idle", messages: [], loading: false, error: null } })); }} style={{ ...btnS, fontSize: 12 }}>← Back</button>
+            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
               <button onClick={() => {
                 if (!form.earners[0]?.label?.trim()) { alert("Please enter your name."); return; }
                 if (!form.earners[0]?.takehome) { alert("Please enter your monthly take-home pay."); return; }
@@ -964,7 +963,7 @@ export default function App() {
                 startReview("income", REVIEW_PROMPTS.income, data);
               }} style={btnP}>Review with Clearpath →</button>
             </div>
-            {reviews.income.status !== "idle" && (
+            {reviews.income.status !== "idle" && (reviews.income.messages.length > 0 || reviews.income.loading || reviews.income.error) && (
               <ReviewPanel review={reviews.income}
                 onConfirm={() => confirmReview("income")}
                 onEdit={() => editSection("income", 1)} />
@@ -1009,7 +1008,7 @@ export default function App() {
                 startReview("expenses_regular", REVIEW_PROMPTS.expenses_regular, expData);
               }} style={btnP}>Review with Clearpath →</button>
             </div>
-            {reviews.expenses_regular.status !== "idle" && (
+            {reviews.expenses_regular.status !== "idle" && (reviews.expenses_regular.messages.length > 0 || reviews.expenses_regular.loading || reviews.expenses_regular.error) && (
               <ReviewPanel review={reviews.expenses_regular}
                 onConfirm={() => confirmReview("expenses_regular")}
                 onEdit={() => editSection("expenses_regular", 2)} />
@@ -1081,7 +1080,7 @@ export default function App() {
               <button onClick={() => { setStep(2); setReviews(r => ({ ...r, expenses_irregular: { status: "idle", messages: [], loading: false, error: null } })); }} style={{ ...btnS, fontSize: 12 }}>← Back</button>
               <button onClick={() => startReview("expenses_irregular", REVIEW_PROMPTS.expenses_irregular, { irregular_expenses: form.irregular_expenses })} style={btnP}>Review with Clearpath →</button>
             </div>
-            {reviews.expenses_irregular.status !== "idle" && (
+            {reviews.expenses_irregular.status !== "idle" && (reviews.expenses_irregular.messages.length > 0 || reviews.expenses_irregular.loading || reviews.expenses_irregular.error) && (
               <ReviewPanel review={reviews.expenses_irregular}
                 onConfirm={() => confirmReview("expenses_irregular")}
                 onEdit={() => editSection("expenses_irregular", 3)} />
@@ -1174,7 +1173,7 @@ export default function App() {
                 startReview("debts", REVIEW_PROMPTS.debts, { debts: form.debts });
               }} style={btnP}>Review with Clearpath →</button>
             </div>
-            {reviews.debts.status !== "idle" && (
+            {reviews.debts.status !== "idle" && (reviews.debts.messages.length > 0 || reviews.debts.loading || reviews.debts.error) && (
               <ReviewPanel review={reviews.debts}
                 onConfirm={() => confirmReview("debts")}
                 onEdit={() => editSection("debts", 4)} />
@@ -1260,7 +1259,7 @@ export default function App() {
                 startReview("goals", REVIEW_PROMPTS.goals, buildPayload());
               }} style={btnP}>Review with Clearpath →</button>
             </div>
-            {reviews.goals.status !== "idle" && (
+            {reviews.goals.status !== "idle" && (reviews.goals.messages.length > 0 || reviews.goals.loading || reviews.goals.error) && (
               <ReviewPanel review={reviews.goals}
                 onConfirm={generatePlan}
                 onEdit={() => editSection("goals", 5)} />
