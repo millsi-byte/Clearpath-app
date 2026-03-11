@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ── Supabase helpers ──────────────────────────────────────────────────────────
-const SUPABASE_URL = (typeof import.meta !== "undefined" && import.meta.env?.SUPABASE_URL) || "";
-const SUPABASE_KEY = (typeof import.meta !== "undefined" && import.meta.env?.SUPABASE_PUBLISHABLE_KEY) || "";
+const SUPABASE_URL = (typeof import.meta !== "undefined" && import.meta.env?.VITE_SUPABASE_URL) || "";
+const SUPABASE_KEY = (typeof import.meta !== "undefined" && import.meta.env?.VITE_SUPABASE_PUBLISHABLE_KEY) || "";
 
 async function sbFetch(path, opts = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
